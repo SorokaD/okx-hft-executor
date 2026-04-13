@@ -1,0 +1,124 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env/
+.virtualenv/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Env & secrets (не коммитить)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+*.p12
+
+# Testing / coverage / typecheck / lint caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Logs & local runtime data
+*.log
+logs/
+log/
+data/
+*.pid
+*.sock
+
+# Databases & local stores (часто большие)
+*.db
+*.sqlite
+*.sqlite3
+
+# Тяжёлые / бинарные артефакты (данные, дампы, модели)
+*.parquet
+*.feather
+*.arrow
+*.orc
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.onnx
+*.bin
+*.dll
+*.dylib
+*.exe
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.lz4
+*.zst
+
+# Медиа (если случайно появятся в репо)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wav
+*.mp3
+
+# Node (если появится фронт / tooling)
+node_modules/
+
+# Docker / локальные образы-артефакты
+*.img
