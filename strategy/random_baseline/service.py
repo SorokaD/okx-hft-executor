@@ -1,0 +1,63 @@
+﻿from __future__ import annotations
+
+import random
+from datetime import datetime, timedelta
+
+from services.id_generation import new_client_order_id
+from strategy.random_baseline.config import RandomBaselineConfig
+from strategy.random_baseline.model import BaselineSignal
+from strategy.random_baseline.state import RandomBaselineState
+
+
+class RandomBaselineStrategy:
+    """Минимальная baseline-стратегия: раз в шаг выбирает long/short случайно."""
+
+    def __init__(
+        self,
+        config: RandomBaselineConfig | None = None,
+        state: RandomBaselineState | None = None,
+    ) -> None:
+        self.config = config or RandomBaselineConfig()
+        self.state = state or RandomBaselineState()
+
+    def should_decide(
+        self,
+        now: datetime,
+        has_open_position: bool,
+        has_active_order: bool,
+        executor_healthy: bool,
+        market_data_fresh: bool,
+    ) -> bool:
+        """True только когда можно запускать новый decision step."""
+        if not executor_healthy or not market_data_fresh:
+            return False
+        if has_open_position or has_active_order:
+            return False
+
+        if self.state.cooldown_until is not None and now < self.state.cooldown_until:
+            return False
+
+        if self.state.last_decision_ts is None:
+            return True
+
+        elapsed = (now - self.state.last_decision_ts).total_seconds()
+        return elapsed >= self.config.decision_step_sec
+
+    def make_decision(self, now: datetime) -> BaselineSignal:
+        """Случайно выбирает сторону и возвращает baseline-сигнал."""
+        side = random.choice(["long", "short"])
+        signal = BaselineSignal(
+            signal_id=new_client_order_id(prefix="rb"),
+            strategy_name="random_baseline_v1",
+            side=side,
+            created_at=now,
+            take_profit_ticks=self.config.take_profit_ticks,
+            stop_loss_ticks=self.config.stop_loss_ticks,
+            timeout_sec=self.config.timeout_sec,
+        )
+        self.state.last_decision_ts = now
+        return signal
+
+    def on_position_closed(self, now: datetime) -> None:
+        """После закрытия позиции включает cooldown на `cooldown_sec`."""
+        self.state.cooldown_until = now + timedelta(seconds=self.config.cooldown_sec)

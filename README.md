@@ -1,8 +1,6 @@
 # okx-hft-executor
 
-Исполнительный контур (execution core) для HFT / алгоритмической торговли на **OKX**: сигналы, risk, выставление и сопровождение ордеров, позиция, учёт, журнал, восстановление после сбоев и **reconciliation** с биржей.
-
-Репозиторий сейчас содержит **архитектурный каркас**: структуру пакетов, контракты, документацию и минимальные заглушки. Реализация OKX REST/WebSocket, полноценного run-loop и БД — следующие этапы (см. [docs/roadmap.md](docs/roadmap.md)).
+Рабочий baseline MVP для OKX demo: стратегия принимает решение, открывает market-позицию, сопровождает TP/SL/timeout и закрывает позицию, сохраняя результат в SQLite.
 
 ## Роль в системе
 
@@ -68,19 +66,44 @@ flowchart TB
 2. [docs/trade_lifecycle.md](docs/trade_lifecycle.md) — цепочка от сигнала до persistence и reconciliation.
 3. README в корне каждого пакета — границы ответственности и анти-паттерны.
 
-## Локальный запуск каркаса
+## Что работает сейчас (MVP)
 
-Требуется Python **3.11+**.
+- baseline strategy (`strategy/random_baseline`) с decision step 30 сек;
+- интеграция с OKX v5 demo REST (`exchange/okx/rest_client.py`);
+- entry/exit market order;
+- локальный контроль выхода по TP/SL/timeout;
+- cooldown после закрытия;
+- persistence в SQLite (`signals`, `orders`, `positions`, `trade_results`, `service_events`).
+
+Подробно: [docs/baseline_demo_mvp.md](docs/baseline_demo_mvp.md).
+
+## Локальный запуск
 
 ```bash
 cd okx-hft-executor
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e .
-python -m app.main --dry-run
+copy .env.example .env
+# заполните OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE
+python -m app.main
 ```
 
-Полный прогон без `--dry-run` запускает asyncio-заглушку оркестратора (без сети к бирже).
+Остановить запуск: `Ctrl+C`.
+
+Короткий smoke-run с авто-остановкой:
+
+```bash
+python -m app.main --run-seconds 60
+# или
+python -m app.main --max-loops 120
+```
+
+Проверка OKX API без запуска торгового цикла:
+
+```bash
+python -m app.main --check-okx
+```
 
 Разработка с линтерами и тестами:
 
@@ -89,14 +112,24 @@ pip install -e ".[dev]"
 pytest tests/ -q
 ```
 
-Опциональный control plane (FastAPI) — зависимость `pip install -e ".[control]"` (приложение в `control/app.py` — каркас под будущую реализацию).
-
 ## Переменные окружения
 
 Пример: [.env.example](.env.example). Секреты не коммитить.
 
-## Дальнейшее развитие
+Минимальные demo-переменные:
 
-См. [docs/roadmap.md](docs/roadmap.md): фаза 1 (basic live), фаза 2 (resilient + reconciliation + WS), фаза 3 (platform: paper/replay, мульти-биржевые порты, расширенный учёт).
+```env
+OKX_API_KEY=
+OKX_API_SECRET=
+OKX_API_PASSPHRASE=
+OKX_FLAG_DEMO=1
+OKX_BASE_URL=https://www.okx.com
+OKX_INST_ID=BTC-USDT-SWAP
+OKX_TD_MODE=cross
+OKX_ORD_TYPE=market
+OKX_ORDER_SIZE=1
+OKX_HFT_SAFE_MODE=1
+OKX_ENABLE_REAL_OKX_IN_PAPER=0
+```
 
-Рекомендуемый следующий шаг после каркаса: реализовать `exchange.okx.rest_client` + нормализацию в `adapter`, подключить `ExecutionEngine.run_forever` к очереди событий и persistence журнала, затем первый цикл `ReconciliationService` по REST snapshot.
+Практический гайд запуска и проверки: [docs/baseline_demo_mvp.md](docs/baseline_demo_mvp.md).

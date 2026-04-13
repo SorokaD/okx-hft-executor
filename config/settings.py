@@ -32,18 +32,57 @@ class Settings(BaseSettings):
     )
 
     env: str = Field(default="development", validation_alias="OKX_HFT_ENV")
-    runtime_mode: RuntimeMode = Field(default=RuntimeMode.PAPER, validation_alias="OKX_HFT_RUNTIME_MODE")
-    log_level: str = Field(default="INFO", validation_alias="OKX_HFT_LOG_LEVEL")
+    runtime_mode: RuntimeMode = Field(
+        default=RuntimeMode.PAPER,
+        validation_alias="OKX_HFT_RUNTIME_MODE",
+    )
+    log_level: str = Field(
+        default="INFO",
+        validation_alias="OKX_HFT_LOG_LEVEL",
+    )
 
-    okx_api_key: SecretStr | None = Field(default=None, validation_alias="OKX_API_KEY")
-    okx_api_secret: SecretStr | None = Field(default=None, validation_alias="OKX_API_SECRET")
-    okx_api_passphrase: SecretStr | None = Field(default=None, validation_alias="OKX_API_PASSPHRASE")
+    okx_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="OKX_API_KEY",
+    )
+    okx_api_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias="OKX_API_SECRET",
+    )
+    okx_api_passphrase: SecretStr | None = Field(
+        default=None,
+        validation_alias="OKX_API_PASSPHRASE",
+    )
     okx_flag_demo: bool = Field(default=True, validation_alias="OKX_FLAG_DEMO")
+    okx_base_url: str = Field(
+        default="https://www.okx.com",
+        validation_alias="OKX_BASE_URL",
+    )
+    okx_inst_id: str = Field(default="BTC-USDT-SWAP", validation_alias="OKX_INST_ID")
+    okx_td_mode: str = Field(default="cross", validation_alias="OKX_TD_MODE")
+    okx_ord_type: str = Field(default="market", validation_alias="OKX_ORD_TYPE")
+    okx_order_size: str = Field(default="1", validation_alias="OKX_ORDER_SIZE")
 
-    control_host: str = Field(default="127.0.0.1", validation_alias="OKX_HFT_CONTROL_HOST")
+    control_host: str = Field(
+        default="127.0.0.1",
+        validation_alias="OKX_HFT_CONTROL_HOST",
+    )
     control_port: int = Field(default=8080, validation_alias="OKX_HFT_CONTROL_PORT")
 
-    metrics_enabled: bool = Field(default=False, validation_alias="OKX_HFT_METRICS_ENABLED")
+    metrics_enabled: bool = Field(
+        default=False,
+        validation_alias="OKX_HFT_METRICS_ENABLED",
+    )
+    sqlite_path: str = Field(
+        default="data/baseline_mvp.sqlite3",
+        validation_alias="OKX_SQLITE_PATH",
+    )
+    loop_sleep_sec: float = Field(default=1.0, validation_alias="OKX_LOOP_SLEEP_SEC")
+    safe_mode: bool = Field(default=False, validation_alias="OKX_HFT_SAFE_MODE")
+    enable_real_okx_in_paper: bool = Field(
+        default=False,
+        validation_alias="OKX_ENABLE_REAL_OKX_IN_PAPER",
+    )
 
 
 @lru_cache

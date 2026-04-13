@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Protocol
 
 from domain.models.order import Order
+from exchange.okx.models import OkxOrder, OkxPosition, OkxTicker
 
 
 class ExchangeClient(Protocol):
@@ -19,4 +21,29 @@ class ExchangeClient(Protocol):
         ...
 
     async def cancel_order(self, client_order_id: str) -> None:
+        ...
+
+    async def place_market_order(
+        self, *, side: str, size: str, cl_ord_id: str, reduce_only: bool = False
+    ) -> str:
+        ...
+
+    async def get_order(
+        self, *, inst_id: str, ord_id: str | None = None, cl_ord_id: str | None = None
+    ) -> OkxOrder | None:
+        ...
+
+    async def get_open_orders(self, *, inst_id: str) -> list[OkxOrder]:
+        ...
+
+    async def get_positions(self, *, inst_id: str) -> list[OkxPosition]:
+        ...
+
+    async def get_account_snapshot(self) -> dict[str, object]:
+        ...
+
+    async def get_ticker_last(self, *, inst_id: str) -> OkxTicker:
+        ...
+
+    async def get_tick_size(self, *, inst_id: str) -> Decimal:
         ...

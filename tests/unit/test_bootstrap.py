@@ -9,7 +9,7 @@ from config.settings import Settings, RuntimeMode
 def test_build_executor_context() -> None:
     settings = Settings(
         env="test",
-        runtime_mode=RuntimeMode.PAPER,
+        runtime_mode=RuntimeMode.REPLAY,
         log_level="INFO",
         okx_flag_demo=True,
     )
