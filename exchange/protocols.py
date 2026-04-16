@@ -23,8 +23,22 @@ class ExchangeClient(Protocol):
     async def cancel_order(self, client_order_id: str) -> None:
         ...
 
+    async def cancel_order_by_client_id(self, *, inst_id: str, cl_ord_id: str) -> None:
+        ...
+
     async def place_market_order(
         self, *, side: str, size: str, cl_ord_id: str, reduce_only: bool = False
+    ) -> str:
+        ...
+
+    async def place_limit_post_only(
+        self,
+        *,
+        side: str,
+        size: str,
+        price: Decimal,
+        cl_ord_id: str,
+        reduce_only: bool = False,
     ) -> str:
         ...
 
@@ -46,4 +60,7 @@ class ExchangeClient(Protocol):
         ...
 
     async def get_tick_size(self, *, inst_id: str) -> Decimal:
+        ...
+
+    async def get_best_bid_ask(self, *, inst_id: str) -> tuple[Decimal, Decimal]:
         ...

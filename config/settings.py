@@ -60,8 +60,16 @@ class Settings(BaseSettings):
     )
     okx_inst_id: str = Field(default="BTC-USDT-SWAP", validation_alias="OKX_INST_ID")
     okx_td_mode: str = Field(default="cross", validation_alias="OKX_TD_MODE")
-    okx_ord_type: str = Field(default="market", validation_alias="OKX_ORD_TYPE")
+    okx_ord_type: str = Field(default="post_only", validation_alias="OKX_ORD_TYPE")
     okx_order_size: str = Field(default="1", validation_alias="OKX_ORDER_SIZE")
+    okx_maker_reprice_sec: int = Field(
+        default=3,
+        validation_alias="OKX_MAKER_REPRICE_SEC",
+    )
+    okx_maker_max_wait_sec: int = Field(
+        default=20,
+        validation_alias="OKX_MAKER_MAX_WAIT_SEC",
+    )
 
     control_host: str = Field(
         default="127.0.0.1",

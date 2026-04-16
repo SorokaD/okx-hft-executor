@@ -33,6 +33,10 @@ class OkxStubExchangeClient:
     async def cancel_order(self, client_order_id: str) -> None:
         log.debug("stub cancel_order %s", client_order_id)
 
+    async def cancel_order_by_client_id(self, *, inst_id: str, cl_ord_id: str) -> None:
+        _ = inst_id
+        log.debug("stub cancel_order_by_client_id %s", cl_ord_id)
+
     async def place_market_order(
         self, *, side: str, size: str, cl_ord_id: str, reduce_only: bool = False
     ) -> str:
@@ -45,6 +49,30 @@ class OkxStubExchangeClient:
             side=side,
             px=self._price,
             avg_px=self._price,
+            sz=Decimal(size),
+            fill_sz=Decimal(size),
+        )
+        self._orders[ord_id] = order
+        return ord_id
+
+    async def place_limit_post_only(
+        self,
+        *,
+        side: str,
+        size: str,
+        price: Decimal,
+        cl_ord_id: str,
+        reduce_only: bool = False,
+    ) -> str:
+        _ = reduce_only
+        ord_id = f"stub-{cl_ord_id}"
+        order = OkxOrder(
+            ord_id=ord_id,
+            cl_ord_id=cl_ord_id,
+            state="filled",
+            side=side,
+            px=price,
+            avg_px=price,
             sz=Decimal(size),
             fill_sz=Decimal(size),
         )
@@ -85,3 +113,7 @@ class OkxStubExchangeClient:
     async def get_tick_size(self, *, inst_id: str) -> Decimal:
         _ = inst_id
         return Decimal("0.1")
+
+    async def get_best_bid_ask(self, *, inst_id: str) -> tuple[Decimal, Decimal]:
+        _ = inst_id
+        return (self._price - Decimal("0.1"), self._price + Decimal("0.1"))

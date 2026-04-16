@@ -87,6 +87,34 @@ class OkxRestClient:
         )
         return str(item.get("ordId", ""))
 
+    async def place_limit_post_only(
+        self,
+        *,
+        side: str,
+        size: str,
+        price: Decimal,
+        cl_ord_id: str,
+        reduce_only: bool = False,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "instId": self._settings.okx_inst_id,
+            "tdMode": self._settings.okx_td_mode,
+            "side": side,
+            "ordType": "post_only",
+            "sz": size,
+            "px": str(price),
+            "clOrdId": self._normalize_cl_ord_id(cl_ord_id),
+        }
+        if reduce_only:
+            payload["reduceOnly"] = True
+        item = await self._request(
+            "POST",
+            "/api/v5/trade/order",
+            body=payload,
+            auth=True,
+        )
+        return str(item.get("ordId", ""))
+
     async def close_position_market(self, *, side: str, size: str, cl_ord_id: str) -> str:
         """Упрощённый market close для smoke-проверок."""
         return await self.place_market_order(
@@ -102,10 +130,11 @@ class OkxRestClient:
         inst_id: str,
         cl_ord_id: str,
     ) -> None:
+        normalized = self._normalize_cl_ord_id(cl_ord_id)
         await self._request(
             "POST",
             "/api/v5/trade/cancel-order",
-            body={"instId": inst_id, "clOrdId": cl_ord_id},
+            body={"instId": inst_id, "clOrdId": normalized},
             auth=True,
         )
 
@@ -207,6 +236,25 @@ class OkxRestClient:
         if not tick:
             raise RuntimeError("tickSz not present in instrument metadata.")
         return Decimal(tick)
+
+    async def get_best_bid_ask(self, *, inst_id: str) -> tuple[Decimal, Decimal]:
+        data = await self._request(
+            "GET",
+            "/api/v5/market/books",
+            params={"instId": inst_id, "sz": "1"},
+            auth=False,
+            expect_list=True,
+        )
+        if not data:
+            raise RuntimeError("Order book data is empty.")
+        first = data[0]
+        bids = first.get("bids") or []
+        asks = first.get("asks") or []
+        if not bids or not asks:
+            raise RuntimeError("Order book has no bids/asks.")
+        best_bid = Decimal(str(bids[0][0]))
+        best_ask = Decimal(str(asks[0][0]))
+        return best_bid, best_ask
 
     async def _request(
         self,
