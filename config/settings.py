@@ -70,6 +70,10 @@ class Settings(BaseSettings):
         default=20,
         validation_alias="OKX_MAKER_MAX_WAIT_SEC",
     )
+    okx_http_timeout_sec: float = Field(
+        default=25.0,
+        validation_alias="OKX_HTTP_TIMEOUT_SEC",
+    )
 
     control_host: str = Field(
         default="127.0.0.1",

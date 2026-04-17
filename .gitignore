@@ -122,3 +122,6 @@ node_modules/
 
 # Docker / локальные образы-артефакты
 *.img
+
+*.sqlite3
+*.env.example

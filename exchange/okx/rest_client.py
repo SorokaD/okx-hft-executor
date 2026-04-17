@@ -324,9 +324,14 @@ class OkxRestClient:
             headers=headers,
             data=body_str.encode("utf-8") if body_str else None,
         )
+        timeout_sec = float(self._settings.okx_http_timeout_sec)
         try:
-            with urlopen(req, timeout=10) as resp:
+            with urlopen(req, timeout=timeout_sec) as resp:
                 raw = resp.read().decode("utf-8")
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"OKX request timeout on {method} {request_path}: {exc}"
+            ) from exc
         except HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             self._log_http_failure(
