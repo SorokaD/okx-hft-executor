@@ -25,6 +25,15 @@ def _to_decimal(value: str | None) -> Decimal | None:
     return Decimal(value)
 
 
+def _parse_ms_timestamp(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
 class OkxRestClient:
     """Небольшой async-friendly клиент через asyncio.to_thread + urllib."""
 
@@ -184,11 +193,17 @@ class OkxRestClient:
             pos = _to_decimal(item.get("pos"))
             if pos is None or pos == 0:
                 continue
+            raw_pos_id = item.get("posId") or item.get("posID")
+            pos_id = str(raw_pos_id).strip() if raw_pos_id not in (None, "") else None
+            if pos_id == "":
+                pos_id = None
             result.append(
                 OkxPosition(
                     inst_id=item.get("instId", inst_id),
                     pos=pos,
                     avg_px=_to_decimal(item.get("avgPx")),
+                    pos_id=pos_id,
+                    c_time_ms=_parse_ms_timestamp(item.get("cTime")),
                 )
             )
         return result

@@ -1,0 +1,138 @@
+# Запуск сервиса с нуля
+
+Этот документ — **единая точка входа**: после прочтения можно поднять процесс, понять, какой режим выбран, и где смотреть результат. Остальная документация ([architecture.md](architecture.md), [baseline_demo_mvp.md](baseline_demo_mvp.md)) углубляет детали.
+
+## Требования
+
+- **Python 3.11+** (в проекте указано `requires-python >= 3.11` в `pyproject.toml`).
+- Сеть до `OKX_BASE_URL` (по умолчанию `https://www.okx.com`).
+- Для **реальных запросов к OKX** (demo или prod): ключ, секрет, passphrase из личного кабинета OKX.
+
+Рабочая директория в примерах ниже — **корень репозитория** (`okx-hft-executor/`).
+
+## 1. Клонирование и виртуальное окружение
+
+**Windows (PowerShell):**
+
+```powershell
+cd D:\path\to\okx-hft-executor
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+pip install -e .
+```
+
+**Linux / macOS:**
+
+```bash
+cd /path/to/okx-hft-executor
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -e .
+```
+
+Для разработки (тесты, ruff, mypy):
+
+```bash
+pip install -e ".[dev]"
+```
+
+## 2. Конфигурация: `.env`
+
+1. Скопируйте шаблон:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   На Windows: `copy .env.example .env`
+
+2. Откройте `.env` в редакторе. Все значения читает `config/settings.py` (префиксы переменных как в [.env.example](../.env.example)).
+
+### Stub vs OKX REST (reference)
+
+`app/bootstrap.py` подключает **реальный REST-клиент** только если **не** выполняется ни одно из условий «использовать заглушку»:
+
+| Условие | Результат |
+|--------|-----------|
+| `OKX_HFT_RUNTIME_MODE=replay` | всегда заглушка |
+| `OKX_HFT_SAFE_MODE=1` | всегда заглушка (ордера на биржу не уходят) |
+| `OKX_HFT_RUNTIME_MODE=paper` **и** `OKX_ENABLE_REAL_OKX_IN_PAPER=0` | заглушка |
+| Иначе | **OkxRestClient** — реальные HTTP-запросы к OKX |
+
+**Практика:**
+
+- **Локально «погонять цикл» без биржи:** `OKX_HFT_RUNTIME_MODE=paper`, `OKX_HFT_SAFE_MODE=1` (или оставить `OKX_ENABLE_REAL_OKX_IN_PAPER=0`). Ключи не обязательны для заглушки, но для единообразия `.env` можно заполнить.
+- **OKX demo с реальными заявками:** `OKX_FLAG_DEMO=1`, ключи demo, **`OKX_HFT_SAFE_MODE=0`**, и дальше один из вариантов:
+  - `OKX_HFT_RUNTIME_MODE=live` — типичный путь для demo/live API; или
+  - `OKX_HFT_RUNTIME_MODE=paper` и **`OKX_ENABLE_REAL_OKX_IN_PAPER=1`** — тот же REST, но режим в настройках остаётся `paper`.
+
+Без валидных `OKX_API_*` реальный клиент при старте не соберётся (см. `OkxRestClient`).
+
+### 2.2. Минимальный набор переменных для demo-торговли
+
+Имеет смысл выставить явно:
+
+```env
+OKX_HFT_RUNTIME_MODE=live
+OKX_HFT_SAFE_MODE=0
+OKX_FLAG_DEMO=1
+OKX_API_KEY=...
+OKX_API_SECRET=...
+OKX_API_PASSPHRASE=...
+OKX_BASE_URL=https://www.okx.com
+OKX_INST_ID=BTC-USDT-SWAP
+OKX_SQLITE_PATH=data/baseline_mvp.sqlite3
+OKX_LOOP_SLEEP_SEC=1
+```
+
+Остальное — из `.env.example` (размер контракта, `OKX_TD_MODE`, maker reprice и т.д.).
+
+## 3. Команды запуска
+
+Точка входа: **`python -m app.main`** (или установленный скрипт `okx-hft-executor` после `pip install -e .`).
+
+| Задача | Команда |
+|--------|---------|
+| Основной цикл (без лимита времени) | `python -m app.main` |
+| Ограничение по времени (например 3 суток: 259200 с) | `python -m app.main --run-seconds 259200` |
+| Ограничение числа итераций цикла | `python -m app.main --max-loops 500` |
+| Только проверить конфиг и контекст | `python -m app.main --dry-run` |
+| Проверить доступность OKX API **без** торгового цикла | `python -m app.main --check-okx` |
+
+Остановка интерактивного запуска: **Ctrl+C**. В конце корректного завершения в лог пишется сводка по SQLite (`signals`, `orders`, `positions`, …).
+
+### Долгий фоновый запуск (Windows)
+
+Если нужен процесс без окна терминала (как при ручном `Start-Process`):
+
+```powershell
+Set-Location D:\path\to\okx-hft-executor
+Start-Process python -ArgumentList "-m","app.main","--run-seconds","259200" -WorkingDirectory (Get-Location) -WindowStyle Hidden
+```
+
+Проверка, что процесс жив: диспетчер задач или `Get-CimInstance Win32_Process` с фильтром по `CommandLine`, содержащему `app.main`.
+
+## 4. Как убедиться, что всё работает
+
+1. **Логи (stdout):** уровень задаётся `OKX_HFT_LOG_LEVEL`. Для baseline ожидаются сообщения вроде `starting baseline executor`, решения стратегии, при demo — `entry maker order submitted`, `position opened`, затем выход по TP/SL/timeout.
+2. **SQLite:** файл по пути `OKX_SQLITE_PATH`. Таблицы: `signals`, `orders`, `positions`, `trade_results`, `service_events`. События вроде `position_reconciled` или `executor unhealthy` помогают при разборе инцидентов.
+3. **Быстрая проверка API:** `python -m app.main --check-okx` — account, ticker, tick size.
+
+## 5. Частые проблемы
+
+| Симптом | Что проверить |
+|---------|----------------|
+| Процесс крутится, но на OKX ничего нет | `OKX_HFT_SAFE_MODE=1` или paper без `OKX_ENABLE_REAL_OKX_IN_PAPER=1` → заглушка. |
+| Ошибка при старте про ключи | Заполнены `OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`, режим не заглушка. |
+| `503` / таймауты OKX | Сеть или сторона биржи; цикл делает паузы и повторяет итерации (см. логи `executor unhealthy`, `loop_iteration_error`). |
+| На бирже есть позиция, сервис «не видит» | В актуальной логике оркестратора выполняется восстановление позиции из REST snapshot позиций; в `service_events` ищите `position_reconciled`. |
+
+## 6. Куда идти дальше
+
+- Поведение baseline (стратегия, maker post-only, TP/SL/timeout): [baseline_demo_mvp.md](baseline_demo_mvp.md).
+- Стратегия подробно: [strategies/random_execution_baseline.md](strategies/random_execution_baseline.md).
+- Режимы `live` / `paper` / `replay`: [runtime_modes.md](runtime_modes.md).
+- Идея сверки с биржей: [reconciliation.md](reconciliation.md).
+- Карта каталогов: [project_structure.md](project_structure.md).

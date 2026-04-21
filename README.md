@@ -1,6 +1,10 @@
 # okx-hft-executor
 
-Рабочий baseline MVP для OKX demo: стратегия принимает решение, открывает market-позицию, сопровождает TP/SL/timeout и закрывает позицию, сохраняя результат в SQLite.
+Рабочий baseline MVP для OKX (в т.ч. demo): стратегия принимает решение, выставляет **maker post-only** вход/выход, сопровождает позицию по TP/SL/timeout и пишет журнал в SQLite.
+
+## С нуля до запущенного процесса
+
+**Пошаговый гайд (окружение, `.env`, когда идут реальные запросы к OKX, команды, проверка, типовые сбои):** [docs/getting_started.md](docs/getting_started.md).
 
 ## Роль в системе
 
@@ -69,27 +73,43 @@ flowchart TB
 ## Что работает сейчас (MVP)
 
 - baseline strategy (`strategy/random_baseline`) с decision step 30 сек;
-- интеграция с OKX v5 demo REST (`exchange/okx/rest_client.py`);
-- entry/exit market order;
+- интеграция с OKX v5 REST (`exchange/okx/rest_client.py`), при необходимости — заглушка (`stub_client`);
+- вход и выход **post-only (maker)** с перестановкой по bid/ask;
 - локальный контроль выхода по TP/SL/timeout;
 - cooldown после закрытия;
+- сверка позиции с биржей при расхождении (см. [docs/reconciliation.md](docs/reconciliation.md) и событие `position_reconciled` в SQLite);
 - persistence в SQLite (`signals`, `orders`, `positions`, `trade_results`, `service_events`).
 
 Подробно: [docs/baseline_demo_mvp.md](docs/baseline_demo_mvp.md).
 
-## Локальный запуск
+## Локальный запуск (кратко)
 
-```bash
-cd okx-hft-executor
+Полная инструкция: [docs/getting_started.md](docs/getting_started.md).
+
+**Windows (PowerShell):**
+
+```powershell
+cd D:\path\to\okx-hft-executor
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 pip install -e .
 copy .env.example .env
-# заполните OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE
+# настройте .env (см. getting_started.md: safe_mode vs реальный OKX)
 python -m app.main
 ```
 
-Остановить запуск: `Ctrl+C`.
+**Linux / macOS:**
+
+```bash
+cd okx-hft-executor
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cp .env.example .env
+python -m app.main
+```
+
+Остановить интерактивный запуск: `Ctrl+C`.
 
 Короткий smoke-run с авто-остановкой:
 
@@ -110,26 +130,19 @@ python -m app.main --check-okx
 ```bash
 pip install -e ".[dev]"
 pytest tests/ -q
+# опционально: make test (Unix) или команды из Makefile вручную на Windows
 ```
 
 ## Переменные окружения
 
-Пример: [.env.example](.env.example). Секреты не коммитить.
+Шаблон со всеми именами: [.env.example](.env.example). Секреты не коммитить.
 
-Минимальные demo-переменные:
+Критично для поведения «реальные ордера / заглушка»:
 
-```env
-OKX_API_KEY=
-OKX_API_SECRET=
-OKX_API_PASSPHRASE=
-OKX_FLAG_DEMO=1
-OKX_BASE_URL=https://www.okx.com
-OKX_INST_ID=BTC-USDT-SWAP
-OKX_TD_MODE=cross
-OKX_ORD_TYPE=market
-OKX_ORDER_SIZE=1
-OKX_HFT_SAFE_MODE=1
-OKX_ENABLE_REAL_OKX_IN_PAPER=0
-```
+- `OKX_HFT_RUNTIME_MODE` — `live` | `paper` | `replay`
+- `OKX_HFT_SAFE_MODE` — при `1` всегда заглушка, без HTTP к бирже по ордерам
+- `OKX_ENABLE_REAL_OKX_IN_PAPER` — при `paper` и `0` используется заглушка (если не включён safe_mode выше)
 
-Практический гайд запуска и проверки: [docs/baseline_demo_mvp.md](docs/baseline_demo_mvp.md).
+Таблица режимов и примеры: [docs/getting_started.md](docs/getting_started.md#stub-vs-okx-rest-reference).
+
+Поведение baseline и логи: [docs/baseline_demo_mvp.md](docs/baseline_demo_mvp.md).

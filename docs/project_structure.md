@@ -29,12 +29,15 @@ okx-hft-executor/
 ├── control/                  # Health, pause/resume/flatten (опциональный веб-слой)
 │
 ├── docs/                     # Архитектура и процессы
+│   ├── getting_started.md    # С нуля: venv, .env, команды, типовые ошибки
+│   ├── baseline_demo_mvp.md  # Поведение текущего baseline
 │   ├── architecture.md
 │   ├── project_structure.md
 │   ├── runtime_modes.md
 │   ├── trade_lifecycle.md
 │   ├── reconciliation.md
-│   └── roadmap.md
+│   ├── roadmap.md
+│   └── strategies/           # описание baseline-стратегии (md)
 │
 └── tests/                    # unit / integration / replay / fixtures
     ├── unit/

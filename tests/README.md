@@ -21,6 +21,8 @@
 
 ## Запуск
 
+Сначала установите dev-зависимости: `pip install -e ".[dev]"` (см. [docs/getting_started.md](../docs/getting_started.md)).
+
 ```bash
 make test
 # или

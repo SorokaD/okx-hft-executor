@@ -144,6 +144,69 @@ async def run_baseline_loop_with_limits(
                 positions = await ctx.exchange.get_positions(inst_id=inst_id)
                 has_open_position = len(positions) > 0 or active_position is not None
 
+                okx_inst_positions = [p for p in positions if p.inst_id == inst_id]
+                if not okx_inst_positions and positions:
+                    okx_inst_positions = list(positions)
+                if active_position is None and okx_inst_positions:
+                    okx_pos = okx_inst_positions[0]
+                    if okx_pos.avg_px is not None:
+                        reconciled_side: Literal["long", "short"] = (
+                            "long" if okx_pos.pos > 0 else "short"
+                        )
+                        reconciled_size = abs(okx_pos.pos)
+                        entry_ts = (
+                            datetime.fromtimestamp(
+                                okx_pos.c_time_ms / 1000, tz=timezone.utc
+                            )
+                            if okx_pos.c_time_ms is not None
+                            else now
+                        )
+                        stable_pid = (
+                            f"pos-ex-{okx_pos.pos_id}"
+                            if okx_pos.pos_id
+                            else f"pos-ex-{inst_id}"
+                        )
+                        active_position = _build_active_position(
+                            position_id=stable_pid,
+                            side=reconciled_side,
+                            entry_price=okx_pos.avg_px,
+                            entry_ts=entry_ts,
+                            size=reconciled_size,
+                            tick_size=tick_size,
+                            strategy=strategy,
+                        )
+                        has_open_position = True
+                        log.warning(
+                            "reconciled active_position from exchange: id=%s side=%s entry=%s size=%s",
+                            stable_pid,
+                            reconciled_side,
+                            okx_pos.avg_px,
+                            reconciled_size,
+                        )
+                        store.save_position_open(
+                            position_id=active_position.position_id,
+                            side=active_position.side,
+                            entry_price=float(active_position.entry_price),
+                            entry_ts=active_position.entry_ts.isoformat(),
+                            size=float(active_position.size),
+                        )
+                        store.save_service_event(
+                            event_type="position_reconciled",
+                            message="restored in-memory position from exchange snapshot",
+                            payload={
+                                "position_id": stable_pid,
+                                "side": reconciled_side,
+                                "entry_price": str(okx_pos.avg_px),
+                                "pos_id": okx_pos.pos_id,
+                            },
+                            level="WARNING",
+                        )
+                    else:
+                        log.debug(
+                            "reconcile skipped: OKX reports non-zero pos but avgPx missing inst_id=%s",
+                            inst_id,
+                        )
+
                 if active_order is not None:
                     local_order_id = active_order.client_id
                     order = await ctx.exchange.get_order(inst_id=inst_id, ord_id=active_order.order_id)
@@ -268,7 +331,6 @@ async def run_baseline_loop_with_limits(
                                         "cancel skipped during reprice (already final): clOrdId=%s",
                                         active_order.client_id,
                                     )
-                                    await asyncio.sleep(settings.loop_sleep_sec)
                                     continue
                                 raise
                             best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
@@ -290,16 +352,16 @@ async def run_baseline_loop_with_limits(
                                     reduce_only=active_order.reduce_only,
                                 )
                             except RuntimeError as exc:
-                                # OKX may return sCode=51169 for reduce-only close when position is already gone.
-                                if active_order.purpose == "exit" and _is_okx_reduce_without_position_error(exc):
+                                # OKX: 51169 no position to reduce; 51170 reduce-only wrong side vs exchange book.
+                                if active_order.purpose == "exit" and _is_okx_reduce_sync_error(exc):
                                     log.warning(
-                                        "exit reprice skipped: exchange reports no reducible position (ord_id=%s): %s",
+                                        "exit reprice skipped: exchange rejected reduce-only (ord_id=%s): %s",
                                         active_order.order_id,
                                         exc,
                                     )
                                     store.save_service_event(
                                         event_type="exit_sync_lost",
-                                        message="exit reprice rejected: no reducible position",
+                                        message="exit reprice rejected: reduce-only sync error",
                                         payload={
                                             "ord_id": active_order.order_id,
                                             "error": str(exc),
@@ -308,6 +370,39 @@ async def run_baseline_loop_with_limits(
                                     )
                                     active_order = None
                                     if active_position is not None:
+                                        try:
+                                            exchange_positions = await ctx.exchange.get_positions(
+                                                inst_id=inst_id
+                                            )
+                                        except Exception as sync_exc:  # noqa: BLE001
+                                            log.warning(
+                                                "exit sync check failed after reprice reject: %s",
+                                                sync_exc,
+                                            )
+                                            has_active_order = False
+                                            continue
+                                        if exchange_positions:
+                                            log.warning(
+                                                "exit sync mismatch: exchange still reports %s open position(s), keep local position",
+                                                len(exchange_positions),
+                                            )
+                                            has_open_position = True
+                                            has_active_order = False
+                                            continue
+                                        store.save_position_close(
+                                            position_id=active_position.position_id,
+                                            exit_price=float(ticker.last),
+                                            exit_ts=now.isoformat(),
+                                            exit_reason="sync_lost",
+                                        )
+                                        store.save_service_event(
+                                            event_type="position_closed_sync",
+                                            message="position closed via sync reconcile",
+                                            payload={
+                                                "position_id": active_position.position_id,
+                                                "reason": "exit_reprice_rejected",
+                                            },
+                                        )
                                         strategy.on_position_closed(now)
                                         active_position = None
                                         has_open_position = False
@@ -451,21 +546,52 @@ async def run_baseline_loop_with_limits(
                                 reduce_only=True,
                             )
                         except RuntimeError as exc:
-                            if _is_okx_reduce_without_position_error(exc):
+                            if _is_okx_reduce_sync_error(exc):
                                 log.warning(
-                                    "exit submit skipped: exchange reports no reducible position for %s: %s",
+                                    "exit submit skipped: exchange rejected reduce-only for %s: %s",
                                     active_position.position_id,
                                     exc,
                                 )
                                 store.save_service_event(
                                     event_type="exit_sync_lost",
-                                    message="exit submit rejected: no reducible position",
+                                    message="exit submit rejected: reduce-only sync error",
                                     payload={
                                         "position_id": active_position.position_id,
                                         "reason": reason,
                                         "error": str(exc),
                                     },
                                     level="WARNING",
+                                )
+                                try:
+                                    exchange_positions = await ctx.exchange.get_positions(
+                                        inst_id=inst_id
+                                    )
+                                except Exception as sync_exc:  # noqa: BLE001
+                                    log.warning(
+                                        "exit sync check failed after submit reject: %s",
+                                        sync_exc,
+                                    )
+                                    continue
+                                if exchange_positions:
+                                    log.warning(
+                                        "exit sync mismatch: exchange still reports %s open position(s), keep local position",
+                                        len(exchange_positions),
+                                    )
+                                    has_open_position = True
+                                    continue
+                                store.save_position_close(
+                                    position_id=active_position.position_id,
+                                    exit_price=float(ticker.last),
+                                    exit_ts=now.isoformat(),
+                                    exit_reason="sync_lost",
+                                )
+                                store.save_service_event(
+                                    event_type="position_closed_sync",
+                                    message="position closed via sync reconcile",
+                                    payload={
+                                        "position_id": active_position.position_id,
+                                        "reason": reason,
+                                    },
                                 )
                                 strategy.on_position_closed(now)
                                 active_position = None
@@ -603,9 +729,10 @@ def _maker_price_for_side(
     return best_ask.quantize(tick_size)
 
 
-def _is_okx_reduce_without_position_error(exc: Exception) -> bool:
+def _is_okx_reduce_sync_error(exc: Exception) -> bool:
+    """OKX reduce-only rejects when local view and exchange position disagree."""
     text = str(exc)
-    return "sCode=51169" in text
+    return "sCode=51169" in text or "sCode=51170" in text
 
 
 def _is_okx_cancel_already_done_error(exc: Exception) -> bool:

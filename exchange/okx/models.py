@@ -21,6 +21,8 @@ class OkxPosition:
     inst_id: str
     pos: Decimal
     avg_px: Decimal | None
+    pos_id: str | None = None
+    c_time_ms: int | None = None
 
 
 @dataclass(slots=True)
