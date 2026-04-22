@@ -16,7 +16,7 @@
 - Считает PnL, комиссии, качество исполнения (`accounting`).
 - Обеспечивает наблюдаемость и операционные хуки (`observability`, `control`).
 
-Подробные принципы и границы репозитория: [docs/architecture.md](docs/architecture.md).
+Подробные принципы и границы репозитория: [docs/architecture.md](docs/architecture.md).  
 
 ## High-level архитектура
 
