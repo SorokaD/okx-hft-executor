@@ -1,0 +1,59 @@
+services:
+  executor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: okx-hft-executor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OKX_SQLITE_PATH: /app/data/baseline_mvp.sqlite3
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "python -m app.main --dry-run || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  control-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: okx-hft-control-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OKX_SQLITE_PATH: /app/data/baseline_mvp.sqlite3
+    command:
+      - python
+      - -m
+      - uvicorn
+      - control.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/liveness', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

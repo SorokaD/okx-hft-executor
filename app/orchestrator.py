@@ -19,6 +19,7 @@ from strategy.random_baseline import RandomBaselineStrategy
 @dataclass(slots=True)
 class ActivePosition:
     position_id: str
+    strategy_name: str
     side: Literal["long", "short"]
     entry_price: Decimal
     entry_ts: datetime
@@ -32,6 +33,7 @@ class ActivePosition:
 class ActiveOrder:
     order_id: str
     client_id: str
+    strategy_name: str
     side: Literal["buy", "sell"]
     purpose: Literal["entry", "exit"]
     created_at: datetime
@@ -40,15 +42,37 @@ class ActiveOrder:
     size: str
 
 
+@dataclass(slots=True)
+class StrategyLoopControl:
+    """Управление жизненным циклом strategy loop (enable/disable drain/force)."""
+
+    stop_mode: Literal["none", "drain", "force"] = "none"
+    allow_new_entries: bool = True
+
+    def request_drain_stop(self) -> None:
+        self.stop_mode = "drain"
+        self.allow_new_entries = False
+
+    def request_force_stop(self) -> None:
+        self.stop_mode = "force"
+        self.allow_new_entries = False
+
+
 async def run_baseline_loop(
     ctx: ExecutorContext,
     *,
+    strategy_name_override: str | None = None,
+    inst_id_override: str | None = None,
+    control: StrategyLoopControl | None = None,
     run_seconds: int | None = None,
     max_loops: int | None = None,
 ) -> dict[str, int]:
     """Цикл baseline MVP, опционально с лимитами smoke-run."""
     return await run_baseline_loop_with_limits(
         ctx,
+        strategy_name_override=strategy_name_override,
+        inst_id_override=inst_id_override,
+        control=control,
         run_seconds=run_seconds,
         max_loops=max_loops,
     )
@@ -57,15 +81,19 @@ async def run_baseline_loop(
 async def run_baseline_loop_with_limits(
     ctx: ExecutorContext,
     *,
+    strategy_name_override: str | None = None,
+    inst_id_override: str | None = None,
+    control: StrategyLoopControl | None = None,
     run_seconds: int | None = None,
     max_loops: int | None = None,
 ) -> dict[str, int]:
     """Цикл baseline MVP с optional авто-остановкой для smoke-run."""
     log = logging.getLogger(__name__)
     settings = ctx.settings
-    strategy = RandomBaselineStrategy()
+    strategy_name = strategy_name_override or settings.strategy_name
+    strategy = RandomBaselineStrategy(strategy_name=strategy_name)
     store = SqliteMvpStore(settings.sqlite_path)
-    inst_id = settings.okx_inst_id
+    inst_id = inst_id_override or settings.okx_inst_id
     started_at = ctx.clock.now_utc()
     loop_count = 0
     try:
@@ -119,6 +147,9 @@ async def run_baseline_loop_with_limits(
                 if elapsed >= run_seconds:
                     log.info("stop reason: run_seconds reached (%s)", run_seconds)
                     break
+            if control is not None and control.stop_mode == "force":
+                log.info("stop reason: force stop requested for strategy=%s", strategy_name)
+                break
             try:
                 ticker = await ctx.exchange.get_ticker_last(inst_id=inst_id)
                 account = await ctx.exchange.get_account_snapshot()
@@ -130,6 +161,7 @@ async def run_baseline_loop_with_limits(
                 market_data_fresh = False
                 log.exception("executor unhealthy: %s", exc)
                 store.save_service_event(
+                    strategy_name="system",
                     event_type="error",
                     message="executor unhealthy",
                     payload={"error": str(exc)},
@@ -168,6 +200,7 @@ async def run_baseline_loop_with_limits(
                         )
                         active_position = _build_active_position(
                             position_id=stable_pid,
+                            strategy_name="reconciled_external",
                             side=reconciled_side,
                             entry_price=okx_pos.avg_px,
                             entry_ts=entry_ts,
@@ -185,12 +218,14 @@ async def run_baseline_loop_with_limits(
                         )
                         store.save_position_open(
                             position_id=active_position.position_id,
+                            strategy_name=active_position.strategy_name,
                             side=active_position.side,
                             entry_price=float(active_position.entry_price),
                             entry_ts=active_position.entry_ts.isoformat(),
                             size=float(active_position.size),
                         )
                         store.save_service_event(
+                            strategy_name=active_position.strategy_name,
                             event_type="position_reconciled",
                             message="restored in-memory position from exchange snapshot",
                             payload={
@@ -218,6 +253,7 @@ async def run_baseline_loop_with_limits(
                             )
                             active_position = _build_active_position(
                                 position_id=new_client_order_id(prefix="pos"),
+                                strategy_name=active_order.strategy_name,
                                 side=position_side,
                                 entry_price=fill_price,
                                 entry_ts=now,
@@ -235,12 +271,14 @@ async def run_baseline_loop_with_limits(
                                 active_position.sl_price,
                             )
                             store.save_service_event(
+                                strategy_name=active_position.strategy_name,
                                 event_type="entry_filled",
                                 message="entry order filled",
                                 payload={"position_id": active_position.position_id},
                             )
                             store.save_position_open(
                                 position_id=active_position.position_id,
+                                strategy_name=active_position.strategy_name,
                                 side=active_position.side,
                                 entry_price=float(active_position.entry_price),
                                 entry_ts=active_position.entry_ts.isoformat(),
@@ -252,6 +290,7 @@ async def run_baseline_loop_with_limits(
                                 holding = (now - active_position.entry_ts).total_seconds()
                                 trade = TradeResult(
                                     position_id=active_position.position_id,
+                                    strategy_name=active_position.strategy_name,
                                     gross_pnl=float(gross_pnl),
                                     fees=0.0,
                                     net_pnl=float(gross_pnl),
@@ -265,6 +304,7 @@ async def run_baseline_loop_with_limits(
                                 )
                                 store.save_trade_result(trade)
                                 store.save_service_event(
+                                    strategy_name=active_position.strategy_name,
                                     event_type="position_closed",
                                     message="position closed",
                                     payload={
@@ -285,6 +325,7 @@ async def run_baseline_loop_with_limits(
                         has_active_order = False
                         store.save_order(
                             local_order_id=local_order_id,
+                            strategy_name=active_order.strategy_name,
                             exchange_order_id=order.ord_id,
                             side=order.side,
                             order_type="post_only",
@@ -297,6 +338,7 @@ async def run_baseline_loop_with_limits(
                     elif order and order.state in {"canceled", "rejected"}:
                         log.warning("entry order not filled: ord_id=%s state=%s", order.ord_id, order.state)
                         store.save_service_event(
+                            strategy_name=active_order.strategy_name,
                             event_type="entry_not_filled",
                             message="entry order canceled/rejected",
                             payload={"ord_id": order.ord_id, "state": order.state},
@@ -304,6 +346,7 @@ async def run_baseline_loop_with_limits(
                         )
                         store.save_order(
                             local_order_id=local_order_id,
+                            strategy_name=active_order.strategy_name,
                             exchange_order_id=order.ord_id,
                             side=order.side,
                             order_type=settings.okx_ord_type,
@@ -360,6 +403,7 @@ async def run_baseline_loop_with_limits(
                                         exc,
                                     )
                                     store.save_service_event(
+                                        strategy_name=active_order.strategy_name,
                                         event_type="exit_sync_lost",
                                         message="exit reprice rejected: reduce-only sync error",
                                         payload={
@@ -396,6 +440,7 @@ async def run_baseline_loop_with_limits(
                                             exit_reason="sync_lost",
                                         )
                                         store.save_service_event(
+                                            strategy_name=active_position.strategy_name,
                                             event_type="position_closed_sync",
                                             message="position closed via sync reconcile",
                                             payload={
@@ -419,6 +464,7 @@ async def run_baseline_loop_with_limits(
                             active_order = ActiveOrder(
                                 order_id=new_order_id,
                                 client_id=new_client_id,
+                                strategy_name=active_order.strategy_name,
                                 side=active_order.side,
                                 purpose=active_order.purpose,
                                 created_at=active_order.created_at,
@@ -444,6 +490,15 @@ async def run_baseline_loop_with_limits(
                             active_order = None
 
                 if active_position is None:
+                    if control is not None and not control.allow_new_entries:
+                        if not has_active_order:
+                            log.info(
+                                "stop reason: drain completed for strategy=%s (no position/order)",
+                                strategy_name,
+                            )
+                            break
+                        await asyncio.sleep(settings.loop_sleep_sec)
+                        continue
                     if strategy.should_decide(
                         now=now,
                         has_open_position=has_open_position,
@@ -461,6 +516,7 @@ async def run_baseline_loop_with_limits(
                             created_at=signal.created_at.isoformat(),
                         )
                         store.save_service_event(
+                            strategy_name=signal.strategy_name,
                             event_type="decision",
                             message="strategy made decision",
                             payload={"side": signal.side, "signal_id": signal.signal_id},
@@ -485,6 +541,7 @@ async def run_baseline_loop_with_limits(
                         active_order = ActiveOrder(
                             order_id=exchange_order_id,
                             client_id=domain_signal.signal_id,
+                            strategy_name=signal.strategy_name,
                             side=order_side,
                             purpose="entry",
                             created_at=now,
@@ -499,12 +556,14 @@ async def run_baseline_loop_with_limits(
                             maker_px,
                         )
                         store.save_service_event(
+                            strategy_name=signal.strategy_name,
                             event_type="entry_submitted",
                             message="entry order submitted",
                             payload={"ord_id": exchange_order_id, "side": order_side},
                         )
                         store.save_order(
                             local_order_id=domain_signal.signal_id,
+                            strategy_name=signal.strategy_name,
                             exchange_order_id=exchange_order_id,
                             side=order_side,
                             order_type="post_only",
@@ -516,6 +575,7 @@ async def run_baseline_loop_with_limits(
                     else:
                         if int(now.timestamp()) % strategy.config.decision_step_sec == 0:
                             store.save_service_event(
+                                strategy_name=strategy_name,
                                 event_type="decision_skipped",
                                 message="decision skipped",
                                 payload={
@@ -553,6 +613,7 @@ async def run_baseline_loop_with_limits(
                                     exc,
                                 )
                                 store.save_service_event(
+                                    strategy_name=active_position.strategy_name,
                                     event_type="exit_sync_lost",
                                     message="exit submit rejected: reduce-only sync error",
                                     payload={
@@ -586,6 +647,7 @@ async def run_baseline_loop_with_limits(
                                     exit_reason="sync_lost",
                                 )
                                 store.save_service_event(
+                                    strategy_name=active_position.strategy_name,
                                     event_type="position_closed_sync",
                                     message="position closed via sync reconcile",
                                     payload={
@@ -601,6 +663,7 @@ async def run_baseline_loop_with_limits(
                         active_order = ActiveOrder(
                             order_id=exit_order_id,
                             client_id=exit_client_id,
+                            strategy_name=active_position.strategy_name,
                             side=exit_side,
                             purpose="exit",
                             created_at=now,
@@ -615,12 +678,14 @@ async def run_baseline_loop_with_limits(
                             maker_px,
                         )
                         store.save_service_event(
+                            strategy_name=active_position.strategy_name,
                             event_type=f"{reason.lower()}_exit",
                             message=f"{reason} exit submitted",
                             payload={"ord_id": exit_order_id, "position_id": active_position.position_id},
                         )
                         store.save_order(
                             local_order_id=exit_client_id,
+                            strategy_name=active_position.strategy_name,
                             exchange_order_id=exit_order_id,
                             side=exit_side,
                             order_type="post_only",
@@ -638,6 +703,7 @@ async def run_baseline_loop_with_limits(
                     exc_info=True,
                 )
                 store.save_service_event(
+                    strategy_name=active_position.strategy_name if active_position else "system",
                     event_type="loop_iteration_error",
                     message="baseline iteration failed",
                     payload={"error": str(exc), "error_type": type(exc).__name__},
@@ -668,6 +734,7 @@ def _is_market_data_fresh(ts_ms: int, now: datetime) -> bool:
 def _build_active_position(
     *,
     position_id: str,
+    strategy_name: str,
     side: Literal["long", "short"],
     entry_price: Decimal,
     entry_ts: datetime,
@@ -685,6 +752,7 @@ def _build_active_position(
         sl = entry_price + sl_delta
     return ActivePosition(
         position_id=position_id,
+        strategy_name=strategy_name,
         side=side,
         entry_price=entry_price,
         entry_ts=entry_ts,
