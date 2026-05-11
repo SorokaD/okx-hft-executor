@@ -18,6 +18,8 @@
 - `app/main.py` — вход в процесс, запуск strategy manager или служебных команд.
 - `app/strategy_manager.py` — управление жизненным циклом стратегий (enable/disable/restart).
 - `app/orchestrator.py` — baseline-оркестрация `signal -> order -> position -> exit`.
+- `strategy/contracts.py` — единый контракт стратегии (plugin API).
+- `strategy/registry.py` — реестр `strategy_name -> factory`.
 - `exchange/okx/rest_client.py` — интеграция с OKX v5 REST.
 - `persistence/sqlite_store.py` — схема и операции хранения runtime-данных.
 - `control/app.py` — удаленный Control API для управления без SSH.
@@ -36,6 +38,15 @@
   - `service_events`
 
 Это позволяет безопасно добавлять новые стратегии и управлять ими без остановки сервиса.
+
+## Как добавить новую стратегию
+
+1. Создать модуль стратегии в `strategy/<name>/service.py`.
+2. Реализовать контракт из `strategy/contracts.py`.
+3. Зарегистрировать стратегию в `strategy/registry.py`.
+4. Добавить ее в `OKX_HFT_STRATEGIES_JSON`.
+
+После этого strategy manager и control-api изменений не требуют.
 
 ## Runtime-режимы
 

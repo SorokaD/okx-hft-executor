@@ -21,7 +21,7 @@ OKX_HFT_RUNTIME_MODE=paper
 OKX_HFT_SAFE_MODE=1
 OKX_HFT_CONTROL_API_TOKEN=<long-random-token>
 OKX_SQLITE_PATH=/app/data/baseline_mvp.sqlite3
-OKX_HFT_STRATEGIES_JSON=[{"strategy_name":"random_baseline_v1","inst_id":"BTC-USDT-SWAP","mode":"enabled"}]
+OKX_HFT_STRATEGIES_JSON=[{"strategy_name":"random_baseline_v1","inst_id":"BTC-USDT-SWAP","mode":"enabled"},{"strategy_name":"mean_reversion_v1","inst_id":"ETH-USDT-SWAP","mode":"disabled"}]
 ```
 
 Для реальных запросов к OKX отключить safe mode и заполнить `OKX_API_*`.

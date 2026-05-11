@@ -13,7 +13,8 @@ from app.bootstrap import ExecutorContext
 from domain.value_objects.instrument_id import InstrumentId
 from persistence.sqlite_store import SqliteMvpStore, TradeResult
 from services.id_generation import new_client_order_id
-from strategy.random_baseline import RandomBaselineStrategy
+from strategy.contracts import StrategyPlugin
+from strategy.registry import create_strategy
 
 
 @dataclass(slots=True)
@@ -91,7 +92,7 @@ async def run_baseline_loop_with_limits(
     log = logging.getLogger(__name__)
     settings = ctx.settings
     strategy_name = strategy_name_override or settings.strategy_name
-    strategy = RandomBaselineStrategy(strategy_name=strategy_name)
+    strategy = create_strategy(strategy_name)
     store = SqliteMvpStore(settings.sqlite_path)
     inst_id = inst_id_override or settings.okx_inst_id
     started_at = ctx.clock.now_utc()
@@ -740,7 +741,7 @@ def _build_active_position(
     entry_ts: datetime,
     size: Decimal,
     tick_size: Decimal,
-    strategy: RandomBaselineStrategy,
+    strategy: StrategyPlugin,
 ) -> ActivePosition:
     tp_delta = tick_size * Decimal(strategy.config.take_profit_ticks)
     sl_delta = tick_size * Decimal(strategy.config.stop_loss_ticks)
