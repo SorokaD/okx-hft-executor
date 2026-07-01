@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +20,19 @@ class RuntimeMode(str, Enum):
     LIVE = "live"
     PAPER = "paper"
     REPLAY = "replay"
+
+
+class StrategyMode(str, Enum):
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+
+class StrategyRuntimeConfig(BaseModel):
+    """Runtime-конфиг одной стратегии для strategy manager."""
+
+    strategy_name: str
+    inst_id: str
+    mode: StrategyMode = StrategyMode.ENABLED
 
 
 class Settings(BaseSettings):
@@ -80,6 +94,10 @@ class Settings(BaseSettings):
         validation_alias="OKX_HFT_CONTROL_HOST",
     )
     control_port: int = Field(default=8080, validation_alias="OKX_HFT_CONTROL_PORT")
+    control_api_token: SecretStr | None = Field(
+        default=None,
+        validation_alias="OKX_HFT_CONTROL_API_TOKEN",
+    )
 
     metrics_enabled: bool = Field(
         default=False,
@@ -90,11 +108,47 @@ class Settings(BaseSettings):
         validation_alias="OKX_SQLITE_PATH",
     )
     loop_sleep_sec: float = Field(default=1.0, validation_alias="OKX_LOOP_SLEEP_SEC")
+    strategy_name: str = Field(
+        default="random_baseline_v1",
+        validation_alias="OKX_HFT_STRATEGY_NAME",
+    )
+    strategies_json: str | None = Field(
+        default=None,
+        validation_alias="OKX_HFT_STRATEGIES_JSON",
+    )
     safe_mode: bool = Field(default=False, validation_alias="OKX_HFT_SAFE_MODE")
     enable_real_okx_in_paper: bool = Field(
         default=False,
         validation_alias="OKX_ENABLE_REAL_OKX_IN_PAPER",
     )
+
+    def get_strategy_runtime_configs(self) -> list[StrategyRuntimeConfig]:
+        """
+        Возвращает список стратегий для менеджера.
+
+        Формат OKX_HFT_STRATEGIES_JSON:
+        [
+          {"strategy_name":"random_baseline_v1","inst_id":"BTC-USDT-SWAP","mode":"enabled"},
+          {"strategy_name":"mean_reversion_v1","inst_id":"ETH-USDT-SWAP","mode":"disabled"}
+        ]
+        """
+        if not self.strategies_json:
+            return [
+                StrategyRuntimeConfig(
+                    strategy_name=self.strategy_name,
+                    inst_id=self.okx_inst_id,
+                    mode=StrategyMode.ENABLED,
+                )
+            ]
+        raw = json.loads(self.strategies_json)
+        if not isinstance(raw, list):
+            raise ValueError("OKX_HFT_STRATEGIES_JSON must be a JSON array")
+        configs: list[StrategyRuntimeConfig] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("Each strategy config item must be an object")
+            configs.append(StrategyRuntimeConfig.model_validate(item))
+        return configs
 
 
 @lru_cache

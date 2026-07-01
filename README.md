@@ -69,6 +69,9 @@ flowchart TB
 1. [docs/project_structure.md](docs/project_structure.md) — дерево каталогов.
 2. [docs/trade_lifecycle.md](docs/trade_lifecycle.md) — цепочка от сигнала до persistence и reconciliation.
 3. README в корне каждого пакета — границы ответственности и анти-паттерны.
+4. [docs/project_overview.md](docs/project_overview.md) — актуальная карта проекта.
+5. [docs/deployment_hybrid.md](docs/deployment_hybrid.md) — деплой и операции.
+6. [docs/control_api.md](docs/control_api.md) — управление стратегиями без SSH.
 
 ## Что работает сейчас (MVP)
 
@@ -124,6 +127,84 @@ python -m app.main --max-loops 120
 ```bash
 python -m app.main --check-okx
 ```
+
+## Docker Compose (хостовый запуск)
+
+1) Подготовьте `.env`:
+
+```bash
+cp .env.example .env
+```
+
+2) Укажите в `.env` имя стратегии (используется как маркер в БД):
+
+```env
+OKX_HFT_STRATEGY_NAME=random_baseline_v1
+```
+
+3) Поднимите сервис:
+
+```bash
+docker compose up -d --build
+```
+
+4) Проверка:
+
+```bash
+docker compose logs -f executor
+```
+
+- SQLite хранится в `./data` (volume `./data:/app/data`).
+- Логи контейнера ротируются через Docker logging (`json-file`, `10m x 5`).
+- Автоперезапуск: `restart: unless-stopped`.
+- Для удаленного управления без SSH используйте `control-api` (порт `8080`).
+
+## Strategy Manager (вариант C: hybrid)
+
+По умолчанию сервис запускает **strategy manager**, который поднимает набор стратегий
+из `OKX_HFT_STRATEGIES_JSON` (или одну `OKX_HFT_STRATEGY_NAME`, если JSON не задан).
+
+Операции включения/отключения стратегии выполняются бесшовно через очередь команд в SQLite:
+
+```bash
+python -m app.main --strategy-enable random_baseline_v1
+python -m app.main --strategy-disable random_baseline_v1 --strategy-disable-mode drain
+python -m app.main --strategy-disable random_baseline_v1 --strategy-disable-mode force
+python -m app.main --strategy-restart random_baseline_v1
+python -m app.main --list-strategies
+```
+
+- `drain`: стратегия перестает открывать новые входы и корректно завершает текущий цикл.
+- `force`: стратегия останавливается немедленно.
+- Для legacy-режима одной стратегии используйте `--single-strategy`.
+
+### Remote Control API (без SSH)
+
+1) Задайте токен в `.env`:
+
+```env
+OKX_HFT_CONTROL_API_TOKEN=<long-random-token>
+```
+
+2) Поднимите сервисы:
+
+```bash
+docker compose up -d --build
+```
+
+3) Управляйте стратегиями по HTTP:
+
+```bash
+curl -H "X-API-Key: $OKX_HFT_CONTROL_API_TOKEN" http://<host>:8080/strategies
+curl -X POST -H "X-API-Key: $OKX_HFT_CONTROL_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"inst_id":"BTC-USDT-SWAP"}' http://<host>:8080/strategies/random_baseline_v1/enable
+curl -X POST -H "X-API-Key: $OKX_HFT_CONTROL_API_TOKEN" \
+  "http://<host>:8080/strategies/random_baseline_v1/disable?mode=drain"
+curl -X POST -H "X-API-Key: $OKX_HFT_CONTROL_API_TOKEN" \
+  http://<host>:8080/strategies/random_baseline_v1/restart
+```
+
+Рекомендуется закрывать порт 8080 через firewall или отдавать API только через reverse proxy с HTTPS и IP allowlist.
 
 Разработка с линтерами и тестами:
 

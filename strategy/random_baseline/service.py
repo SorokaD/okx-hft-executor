@@ -16,9 +16,11 @@ class RandomBaselineStrategy:
         self,
         config: RandomBaselineConfig | None = None,
         state: RandomBaselineState | None = None,
+        strategy_name: str = "random_baseline_v1",
     ) -> None:
         self.config = config or RandomBaselineConfig()
         self.state = state or RandomBaselineState()
+        self.strategy_name = strategy_name
 
     def should_decide(
         self,
@@ -48,7 +50,7 @@ class RandomBaselineStrategy:
         side = random.choice(["long", "short"])
         signal = BaselineSignal(
             signal_id=new_client_order_id(prefix="rb"),
-            strategy_name="random_baseline_v1",
+            strategy_name=self.strategy_name,
             side=side,
             created_at=now,
             take_profit_ticks=self.config.take_profit_ticks,

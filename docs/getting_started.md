@@ -92,16 +92,28 @@ OKX_LOOP_SLEEP_SEC=1
 ## 3. Команды запуска
 
 Точка входа: **`python -m app.main`** (или установленный скрипт `okx-hft-executor` после `pip install -e .`).
+По умолчанию запускается **strategy manager** (мульти-стратегийный режим).
 
 | Задача | Команда |
 |--------|---------|
-| Основной цикл (без лимита времени) | `python -m app.main` |
-| Ограничение по времени (например 3 суток: 259200 с) | `python -m app.main --run-seconds 259200` |
-| Ограничение числа итераций цикла | `python -m app.main --max-loops 500` |
+| Запустить strategy manager | `python -m app.main` |
+| Запустить только одну baseline-стратегию (legacy) | `python -m app.main --single-strategy` |
+| Ограничение по времени (legacy single strategy) | `python -m app.main --single-strategy --run-seconds 259200` |
+| Ограничение числа итераций (legacy single strategy) | `python -m app.main --single-strategy --max-loops 500` |
 | Только проверить конфиг и контекст | `python -m app.main --dry-run` |
 | Проверить доступность OKX API **без** торгового цикла | `python -m app.main --check-okx` |
 
 Остановка интерактивного запуска: **Ctrl+C**. В конце корректного завершения в лог пишется сводка по SQLite (`signals`, `orders`, `positions`, …).
+
+### Управление стратегиями из CLI
+
+```bash
+python -m app.main --list-strategies
+python -m app.main --strategy-enable random_baseline_v1
+python -m app.main --strategy-disable random_baseline_v1 --strategy-disable-mode drain
+python -m app.main --strategy-disable random_baseline_v1 --strategy-disable-mode force
+python -m app.main --strategy-restart random_baseline_v1
+```
 
 ### Долгий фоновый запуск (Windows)
 
@@ -136,3 +148,6 @@ Start-Process python -ArgumentList "-m","app.main","--run-seconds","259200" -Wor
 - Режимы `live` / `paper` / `replay`: [runtime_modes.md](runtime_modes.md).
 - Идея сверки с биржей: [reconciliation.md](reconciliation.md).
 - Карта каталогов: [project_structure.md](project_structure.md).
+- Обзор проекта: [project_overview.md](project_overview.md).
+- Деплой на хост: [deployment_hybrid.md](deployment_hybrid.md).
+- Удаленное управление: [control_api.md](control_api.md).

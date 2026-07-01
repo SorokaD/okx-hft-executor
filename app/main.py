@@ -10,12 +10,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 
 from app.bootstrap import ExecutorContext, build_executor_context
 from app.orchestrator import run_baseline_loop
+from app.strategy_manager import StrategyManager
 from services.id_generation import new_client_order_id
-from config.settings import get_settings
+from config.settings import Settings, get_settings
+from persistence.sqlite_store import SqliteMvpStore
 
 
 def main() -> None:
@@ -49,6 +52,41 @@ def main() -> None:
         action="store_true",
         help="Проверить выставление минимального market order и закрытие.",
     )
+    parser.add_argument(
+        "--single-strategy",
+        action="store_true",
+        help="Запустить только одну стратегию (legacy baseline loop).",
+    )
+    parser.add_argument(
+        "--strategy-enable",
+        type=str,
+        default=None,
+        help="Положить команду enable в очередь strategy manager.",
+    )
+    parser.add_argument(
+        "--strategy-disable",
+        type=str,
+        default=None,
+        help="Положить команду disable в очередь strategy manager.",
+    )
+    parser.add_argument(
+        "--strategy-disable-mode",
+        type=str,
+        default="drain",
+        choices=["drain", "force"],
+        help="Режим disable команды: drain или force.",
+    )
+    parser.add_argument(
+        "--strategy-restart",
+        type=str,
+        default=None,
+        help="Положить команду restart в очередь strategy manager.",
+    )
+    parser.add_argument(
+        "--list-strategies",
+        action="store_true",
+        help="Показать текущее состояние стратегий из SQLite registry.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -61,25 +99,44 @@ def main() -> None:
         settings.runtime_mode.value,
     )
 
-    ctx = build_executor_context(settings)
     if args.dry_run:
+        _ = build_executor_context(settings)
         log.info("Dry-run: контекст собран, выход.")
         return
 
     if args.check_okx:
+        ctx = build_executor_context(settings)
         asyncio.run(run_okx_check(ctx))
         return
     if args.check_okx_order:
+        ctx = build_executor_context(settings)
         asyncio.run(run_okx_order_check(ctx))
         return
 
-    asyncio.run(
-        run_baseline_loop(
-            ctx,
-            run_seconds=args.run_seconds,
-            max_loops=args.max_loops,
+    if args.strategy_enable or args.strategy_disable or args.strategy_restart or args.list_strategies:
+        run_manager_command(
+            settings=settings,
+            sqlite_path=settings.sqlite_path,
+            strategy_enable=args.strategy_enable,
+            strategy_disable=args.strategy_disable,
+            strategy_disable_mode=args.strategy_disable_mode,
+            strategy_restart=args.strategy_restart,
+            list_strategies=args.list_strategies,
         )
-    )
+        return
+
+    if args.single_strategy:
+        ctx = build_executor_context(settings)
+        asyncio.run(
+            run_baseline_loop(
+                ctx,
+                run_seconds=args.run_seconds,
+                max_loops=args.max_loops,
+            )
+        )
+        return
+
+    run_strategy_manager(settings=settings)
 
 
 async def run_okx_check(ctx: ExecutorContext) -> None:
@@ -163,6 +220,75 @@ async def run_okx_order_check(ctx: ExecutorContext) -> None:
         log.info("OKX order check success")
     except Exception as exc:  # noqa: BLE001
         log.error("OKX order check failed: %s", exc)
+
+
+def run_manager_command(
+    *,
+    settings: Settings,
+    sqlite_path: str,
+    strategy_enable: str | None,
+    strategy_disable: str | None,
+    strategy_disable_mode: str,
+    strategy_restart: str | None,
+    list_strategies: bool,
+) -> None:
+    log = logging.getLogger(__name__)
+    store = SqliteMvpStore(sqlite_path)
+    try:
+        existing_rows = store.list_strategies_registry()
+        if not existing_rows:
+            for cfg in settings.get_strategy_runtime_configs():
+                store.upsert_strategy_registry(
+                    strategy_name=cfg.strategy_name,
+                    inst_id=cfg.inst_id,
+                    desired_state="enabled" if cfg.mode.value == "enabled" else "disabled",
+                    runtime_state="stopped",
+                )
+        if strategy_enable:
+            store.enqueue_strategy_command(
+                strategy_name=strategy_enable,
+                command_type="enable",
+            )
+            log.info("queued strategy command: enable %s", strategy_enable)
+        if strategy_disable:
+            store.enqueue_strategy_command(
+                strategy_name=strategy_disable,
+                command_type="disable",
+                command_mode=strategy_disable_mode,
+            )
+            log.info("queued strategy command: disable %s mode=%s", strategy_disable, strategy_disable_mode)
+        if strategy_restart:
+            store.enqueue_strategy_command(
+                strategy_name=strategy_restart,
+                command_type="restart",
+            )
+            log.info("queued strategy command: restart %s", strategy_restart)
+        if list_strategies:
+            rows = store.list_strategies_registry()
+            if not rows:
+                log.info("strategies registry is empty")
+            for row in rows:
+                log.info(
+                    "strategy=%s inst_id=%s desired=%s runtime=%s updated_at=%s",
+                    row["strategy_name"],
+                    row["inst_id"],
+                    row["desired_state"],
+                    row["runtime_state"],
+                    row["updated_at"],
+                )
+    finally:
+        store.close()
+
+
+def run_strategy_manager(*, settings: Settings) -> None:
+    manager = StrategyManager(settings)
+
+    def _stop_handler(_sig: int, _frame: object) -> None:
+        manager.stop()
+
+    signal.signal(signal.SIGINT, _stop_handler)
+    signal.signal(signal.SIGTERM, _stop_handler)
+    asyncio.run(manager.run_forever())
 
 
 if __name__ == "__main__":
