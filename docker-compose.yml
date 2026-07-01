@@ -33,7 +33,7 @@ services:
       - .env
     environment:
       OKX_SQLITE_PATH: /app/data/baseline_mvp.sqlite3
-    command:
+    entrypoint:
       - python
       - -m
       - uvicorn

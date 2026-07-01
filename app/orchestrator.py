@@ -322,8 +322,6 @@ async def run_baseline_loop_with_limits(
                                 strategy.on_position_closed(now)
                                 active_position = None
                                 has_open_position = False
-                        active_order = None
-                        has_active_order = False
                         store.save_order(
                             local_order_id=local_order_id,
                             strategy_name=active_order.strategy_name,
@@ -336,6 +334,8 @@ async def run_baseline_loop_with_limits(
                             created_at=now.isoformat(),
                             filled_at=now.isoformat(),
                         )
+                        active_order = None
+                        has_active_order = False
                     elif order and order.state in {"canceled", "rejected"}:
                         log.warning("entry order not filled: ord_id=%s state=%s", order.ord_id, order.state)
                         store.save_service_event(
