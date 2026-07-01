@@ -75,6 +75,8 @@
 Этот файл — верхнеуровневая карта. Для практической эксплуатации смотри:
 
 - `docs/getting_started.md` — старт и базовые команды;
+- `docs/deployment_vps_runbook.md` — **VPS: Docker, .env, live mode, troubleshooting**;
 - `docs/deployment_hybrid.md` — деплой на хост и операционные шаги;
+- `docs/SECURITY_BASELINE_VPS_SSH_AND_NETWORK.md` — SSH, UFW, Fail2Ban на VPS;
 - `docs/control_api.md` — удаленное управление стратегиями;
 - `docs/trade_lifecycle.md` — жизненный цикл сделки.
