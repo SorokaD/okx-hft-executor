@@ -71,7 +71,8 @@ flowchart TB
 3. README в корне каждого пакета — границы ответственности и анти-паттерны.
 4. [docs/project_overview.md](docs/project_overview.md) — актуальная карта проекта.
 5. [docs/deployment_hybrid.md](docs/deployment_hybrid.md) — деплой и операции.
-6. [docs/control_api.md](docs/control_api.md) — управление стратегиями без SSH.
+6. [docs/deployment_vps_runbook.md](docs/deployment_vps_runbook.md) — **VPS: Docker, .env, live, troubleshooting**.
+7. [docs/control_api.md](docs/control_api.md) — управление стратегиями без SSH.
 
 ## Что работает сейчас (MVP)
 
@@ -128,19 +129,19 @@ python -m app.main --max-loops 120
 python -m app.main --check-okx
 ```
 
-## Docker Compose (хостовый запуск)
+## Docker Compose (хостовый / VPS запуск)
 
-1) Подготовьте `.env`:
+**Полный runbook для VPS:** [docs/deployment_vps_runbook.md](docs/deployment_vps_runbook.md)  
+(установка Docker, `.env`, права на `data/`, live mode, типовые ошибки).  
+Security: [docs/SECURITY_BASELINE_VPS_SSH_AND_NETWORK.md](docs/SECURITY_BASELINE_VPS_SSH_AND_NETWORK.md).
+
+1) Подготовьте `.env` (не коммитить в git):
 
 ```bash
 cp .env.example .env
 ```
 
-2) Укажите в `.env` имя стратегии (используется как маркер в БД):
-
-```env
-OKX_HFT_STRATEGY_NAME=random_baseline_v1
-```
+2) На VPS перед первым `up` создайте `data/` и выставьте владельца `uid=100(app)` — иначе SQLite: `unable to open database file`. См. runbook §4.
 
 3) Поднимите сервис:
 
@@ -151,13 +152,19 @@ docker compose up -d --build
 4) Проверка:
 
 ```bash
+docker compose ps
 docker compose logs -f executor
 ```
 
-- SQLite хранится в `./data` (volume `./data:/app/data`).
-- Логи контейнера ротируются через Docker logging (`json-file`, `10m x 5`).
-- Автоперезапуск: `restart: unless-stopped`.
-- Для удаленного управления без SSH используйте `control-api` (порт `8080`).
+5) Остановка:
+
+```bash
+docker compose down
+```
+
+- SQLite в `./data` → в контейнере `/app/data/baseline_mvp.sqlite3`.
+- `control-api` на порту `8080` (ограничить UFW по IP).
+- Live mode: `OKX_HFT_RUNTIME_MODE=live`, `OKX_HFT_SAFE_MODE=0`, ключи OKX — см. [getting_started.md](docs/getting_started.md).
 
 ## Strategy Manager (вариант C: hybrid)
 

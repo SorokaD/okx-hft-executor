@@ -140,8 +140,15 @@ Start-Process python -ArgumentList "-m","app.main","--run-seconds","259200" -Wor
 | Ошибка при старте про ключи | Заполнены `OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`, режим не заглушка. |
 | `503` / таймауты OKX | Сеть или сторона биржи; цикл делает паузы и повторяет итерации (см. логи `executor unhealthy`, `loop_iteration_error`). |
 | На бирже есть позиция, сервис «не видит» | В актуальной логике оркестратора выполняется восстановление позиции из REST snapshot позиций; в `service_events` ищите `position_reconciled`. |
+| Docker: `unable to open database file` | На хосте `chown` для `./data` под пользователя `app` в контейнере (`uid=100`, см. [deployment_vps_runbook.md](deployment_vps_runbook.md)). |
 
-## 6. Куда идти дальше
+## 6. Деплой на VPS
+
+Пошаговый runbook (Contabo/Ubuntu, SSH, Docker, scp `.env`, live mode):
+
+→ [deployment_vps_runbook.md](deployment_vps_runbook.md)
+
+## 7. Куда идти дальше
 
 - Поведение baseline (стратегия, maker post-only, TP/SL/timeout): [baseline_demo_mvp.md](baseline_demo_mvp.md).
 - Стратегия подробно: [strategies/random_execution_baseline.md](strategies/random_execution_baseline.md).
@@ -150,4 +157,5 @@ Start-Process python -ArgumentList "-m","app.main","--run-seconds","259200" -Wor
 - Карта каталогов: [project_structure.md](project_structure.md).
 - Обзор проекта: [project_overview.md](project_overview.md).
 - Деплой на хост: [deployment_hybrid.md](deployment_hybrid.md).
+- **VPS runbook:** [deployment_vps_runbook.md](deployment_vps_runbook.md).
 - Удаленное управление: [control_api.md](control_api.md).
