@@ -108,3 +108,32 @@ def test_should_use_market_exit_after_attempts() -> None:
         exit_market_grace_sec=3600,
     )
     assert should_use_market_exit(position=position, now=now, config=config) is True
+
+
+def test_is_exit_order_price_stale_long_sell() -> None:
+    from app.position_state import is_exit_order_price_stale
+
+    strategy = _strategy()
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    position = build_active_position_from_okx(
+        okx_pos=OkxPosition(
+            inst_id="BTC-USDT-SWAP",
+            pos=Decimal("0.01"),
+            avg_px=Decimal("61642.9"),
+            c_time_ms=int(now.timestamp() * 1000),
+        ),
+        strategy_name="random_baseline_v1",
+        tick_size=Decimal("0.1"),
+        strategy=strategy,
+        now=now,
+    )
+    assert position is not None
+    assert is_exit_order_price_stale(
+        position=position,
+        order_side="sell",
+        order_price=Decimal("61809.9"),
+        best_bid=Decimal("61925.9"),
+        best_ask=Decimal("61926.0"),
+        stale_ticks=3,
+        tick_size=Decimal("0.1"),
+    )

@@ -20,7 +20,7 @@ services:
       test: ["CMD-SHELL", "python -m app.main --dry-run || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3m
+      retries: 3
       start_period: 20s
 
   control-api:

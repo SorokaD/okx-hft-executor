@@ -17,6 +17,7 @@ from app.position_state import (
     build_active_position,
     calc_gross_pnl,
     check_exit_reason,
+    is_exit_order_price_stale,
     maker_price_for_side,
     should_use_market_exit,
 )
@@ -345,10 +346,46 @@ async def run_baseline_loop_with_limits(
                     elif order and order.state in {"live", "partially_filled"}:
                         reprice_elapsed = (now - active_order.last_reprice_at).total_seconds()
                         max_wait_elapsed = (now - active_order.created_at).total_seconds()
+                        is_exit = active_order.purpose == "exit"
+                        reprice_sec = (
+                            strategy.config.exit_maker_reprice_sec
+                            if is_exit
+                            else settings.okx_maker_reprice_sec
+                        )
+                        max_wait_sec = (
+                            strategy.config.exit_maker_max_wait_sec
+                            if is_exit
+                            else settings.okx_maker_max_wait_sec
+                        )
+                        order_px = order.px or order.avg_px
+                        stale_exit = (
+                            is_exit
+                            and active_position is not None
+                            and order_px is not None
+                        )
+                        if stale_exit:
+                            best_bid, best_ask = await ctx.exchange.get_best_bid_ask(
+                                inst_id=inst_id
+                            )
+                            stale_exit = is_exit_order_price_stale(
+                                position=active_position,
+                                order_side=active_order.side,
+                                order_price=order_px,
+                                best_bid=best_bid,
+                                best_ask=best_ask,
+                                stale_ticks=strategy.config.exit_stale_reprice_ticks,
+                                tick_size=tick_size,
+                            )
                         if (
-                            reprice_elapsed >= settings.okx_maker_reprice_sec
-                            and max_wait_elapsed <= settings.okx_maker_max_wait_sec
+                            (reprice_elapsed >= reprice_sec or stale_exit)
+                            and max_wait_elapsed <= max_wait_sec
                         ):
+                            if stale_exit:
+                                log.warning(
+                                    "exit order stale vs touch: ord_id=%s px=%s, reprice now",
+                                    active_order.order_id,
+                                    order_px,
+                                )
                             try:
                                 await ctx.exchange.cancel_order_by_client_id(
                                     inst_id=inst_id,
@@ -458,12 +495,12 @@ async def run_baseline_loop_with_limits(
                                 reduce_only=active_order.reduce_only,
                                 size=active_order.size,
                             )
-                        elif max_wait_elapsed > settings.okx_maker_max_wait_sec:
+                        elif max_wait_elapsed > max_wait_sec:
                             log.warning(
                                 "maker order timeout: purpose=%s ord_id=%s wait=%ss",
                                 active_order.purpose,
                                 active_order.order_id,
-                                settings.okx_maker_max_wait_sec,
+                                max_wait_sec,
                             )
                             try:
                                 await ctx.exchange.cancel_order_by_client_id(
