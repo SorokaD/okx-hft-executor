@@ -232,11 +232,15 @@ sudo ufw status numbered
 
 ## 9. Обновление версии
 
+Вручную:
+
 ```bash
 cd /opt/okx-hft-executor/okx-hft-executor
 git pull
 sudo docker compose up -d --build
 ```
+
+**Автодеплой при push в `main`:** [deployment_cicd.md](deployment_cicd.md).
 
 Если меняли только `.env`:
 
