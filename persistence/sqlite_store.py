@@ -237,6 +237,49 @@ class SqliteMvpStore:
         )
         self._conn.commit()
 
+    def list_open_positions(
+        self,
+        *,
+        strategy_name: str | None = None,
+    ) -> list[sqlite3.Row]:
+        if strategy_name is None:
+            rows = self._conn.execute(
+                """
+                SELECT position_id, strategy_name, side, entry_price, entry_ts, size
+                FROM positions
+                WHERE exit_ts IS NULL
+                ORDER BY entry_ts ASC
+                """
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT position_id, strategy_name, side, entry_price, entry_ts, size
+                FROM positions
+                WHERE exit_ts IS NULL AND strategy_name = ?
+                ORDER BY entry_ts ASC
+                """,
+                (strategy_name,),
+            ).fetchall()
+        return list(rows)
+
+    def close_open_position_reconciled(
+        self,
+        *,
+        position_id: str,
+        exit_ts: str,
+        exit_reason: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE positions
+            SET exit_price = entry_price, exit_ts = ?, exit_reason = ?
+            WHERE position_id = ? AND exit_ts IS NULL
+            """,
+            (exit_ts, exit_reason, position_id),
+        )
+        self._conn.commit()
+
     def save_trade_result(self, result: TradeResult) -> None:
         self._conn.execute(
             """

@@ -81,7 +81,7 @@ class OkxRestClient:
             "instId": self._settings.okx_inst_id,
             "tdMode": self._settings.okx_td_mode,
             "side": side,
-            "ordType": self._settings.okx_ord_type,
+            "ordType": "market",
             "sz": size,
             "clOrdId": self._normalize_cl_ord_id(cl_ord_id),
         }
