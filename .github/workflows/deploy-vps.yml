@@ -1,0 +1,63 @@
+# Деплой на VPS при push в main, только если менялся код сервиса (не docs).
+# Секреты: Settings → Secrets and variables → Actions → Repository secrets
+#   VPS_SSH_HOST, VPS_SSH_USER, VPS_SSH_PRIVATE_KEY
+#   VPS_DEPLOY_PATH (например /opt/okx-hft-executor/okx-hft-executor)
+#
+# Документация: docs/deployment_cicd.md
+
+name: Deploy VPS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - app/**
+      - config/**
+      - control/**
+      - domain/**
+      - strategy/**
+      - execution/**
+      - risk/**
+      - exchange/**
+      - persistence/**
+      - accounting/**
+      - services/**
+      - observability/**
+      - docker-compose.yml
+      - Dockerfile
+      - pyproject.toml
+      - .dockerignore
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_SSH_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            DEPLOY_PATH="${{ secrets.VPS_DEPLOY_PATH }}"
+            cd "${DEPLOY_PATH}"
+            git fetch origin main
+            git reset --hard origin/main
+            test -f .env || { echo "ERROR: .env missing on server"; exit 1; }
+            docker compose pull 2>/dev/null || true
+            docker compose up -d --build
+            docker compose ps
+            docker compose exec -T executor python -m app.main --dry-run

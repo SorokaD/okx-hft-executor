@@ -132,7 +132,7 @@ python -m app.main --check-okx
 ## Docker Compose (хостовый / VPS запуск)
 
 **Полный runbook для VPS:** [docs/deployment_vps_runbook.md](docs/deployment_vps_runbook.md)  
-(установка Docker, `.env`, права на `data/`, live mode, типовые ошибки).  
+**CI/CD (push в main → автодеплой):** [docs/deployment_cicd.md](docs/deployment_cicd.md)  
 Security: [docs/SECURITY_BASELINE_VPS_SSH_AND_NETWORK.md](docs/SECURITY_BASELINE_VPS_SSH_AND_NETWORK.md).
 
 1) Подготовьте `.env` (не коммитить в git):
