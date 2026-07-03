@@ -165,11 +165,32 @@ ssh okx-hft-executor@<VPS_IP>
 cd /opt/okx-hft-executor/okx-hft-executor
 git log --oneline -5
 git reset --hard <commit-sha>
-docker compose up -d --build
+sudo docker compose up -d --build
 ```
 
 ---
 
-## 10. GitLab / другой CI
+## 10. Workflow упал (exit code 1)
+
+GitHub → run → job **deploy** → **Deploy over SSH** — в логе видны команды с сервера.
+
+| Сообщение | Решение |
+|-----------|---------|
+| `VPS_DEPLOY_PATH is empty` | Секрет `VPS_DEPLOY_PATH` в GitHub Actions |
+| `not a git repo` | На VPS: `git clone` в `DEPLOY_PATH` |
+| `Permission denied (publickey)` | Deploy-ключ в `authorized_keys` + `VPS_SSH_PRIVATE_KEY` |
+| `.env missing` | `scp` `.env` на сервер |
+| `docker: permission denied` | Workflow использует `sudo docker compose` автоматически |
+| `dry-run` failed | `sudo docker compose logs executor` на VPS |
+
+Проверка ключа с ПК:
+
+```powershell
+ssh -i C:\Users\sorok\.ssh\okx-hft-deploy okx-hft-executor@<VPS_IP> "cd /opt/okx-hft-executor/okx-hft-executor && git fetch origin main && sudo docker compose ps"
+```
+
+---
+
+## 11. GitLab / другой CI
 
 Тот же `script` из workflow можно запустить в GitLab CI `deploy` job с `only: changes` и переменными `VPS_*`.
