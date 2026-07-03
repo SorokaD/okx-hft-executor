@@ -10,37 +10,20 @@ from decimal import Decimal
 from typing import Literal
 
 from app.bootstrap import ExecutorContext
+from app.position_reconcile import bootstrap_position_on_startup, reconcile_exchange_position_if_needed
+from app.position_state import (
+    ActiveOrder,
+    ActivePosition,
+    build_active_position,
+    calc_gross_pnl,
+    check_exit_reason,
+    maker_price_for_side,
+    should_use_market_exit,
+)
 from domain.value_objects.instrument_id import InstrumentId
 from persistence.sqlite_store import SqliteMvpStore, TradeResult
 from services.id_generation import new_client_order_id
-from strategy.contracts import StrategyPlugin
 from strategy.registry import create_strategy
-
-
-@dataclass(slots=True)
-class ActivePosition:
-    position_id: str
-    strategy_name: str
-    side: Literal["long", "short"]
-    entry_price: Decimal
-    entry_ts: datetime
-    size: Decimal
-    tp_price: Decimal
-    sl_price: Decimal
-    timeout_at: datetime
-
-
-@dataclass(slots=True)
-class ActiveOrder:
-    order_id: str
-    client_id: str
-    strategy_name: str
-    side: Literal["buy", "sell"]
-    purpose: Literal["entry", "exit"]
-    created_at: datetime
-    last_reprice_at: datetime
-    reduce_only: bool
-    size: str
 
 
 @dataclass(slots=True)
@@ -136,6 +119,16 @@ async def run_baseline_loop_with_limits(
     active_position: ActivePosition | None = None
     active_order: ActiveOrder | None = None
 
+    active_position, active_order = await bootstrap_position_on_startup(
+        ctx=ctx,
+        store=store,
+        strategy=strategy,
+        strategy_name=strategy_name,
+        inst_id=inst_id,
+        tick_size=tick_size,
+        now=started_at,
+    )
+
     try:
         while True:
             now = ctx.clock.now_utc()
@@ -180,68 +173,36 @@ async def run_baseline_loop_with_limits(
                 okx_inst_positions = [p for p in positions if p.inst_id == inst_id]
                 if not okx_inst_positions and positions:
                     okx_inst_positions = list(positions)
-                if active_position is None and okx_inst_positions:
-                    okx_pos = okx_inst_positions[0]
-                    if okx_pos.avg_px is not None:
-                        reconciled_side: Literal["long", "short"] = (
-                            "long" if okx_pos.pos > 0 else "short"
-                        )
-                        reconciled_size = abs(okx_pos.pos)
-                        entry_ts = (
-                            datetime.fromtimestamp(
-                                okx_pos.c_time_ms / 1000, tz=timezone.utc
-                            )
-                            if okx_pos.c_time_ms is not None
-                            else now
-                        )
-                        stable_pid = (
-                            f"pos-ex-{okx_pos.pos_id}"
-                            if okx_pos.pos_id
-                            else f"pos-ex-{inst_id}"
-                        )
-                        active_position = _build_active_position(
-                            position_id=stable_pid,
-                            strategy_name="reconciled_external",
-                            side=reconciled_side,
-                            entry_price=okx_pos.avg_px,
-                            entry_ts=entry_ts,
-                            size=reconciled_size,
-                            tick_size=tick_size,
-                            strategy=strategy,
-                        )
-                        has_open_position = True
-                        log.warning(
-                            "reconciled active_position from exchange: id=%s side=%s entry=%s size=%s",
-                            stable_pid,
-                            reconciled_side,
-                            okx_pos.avg_px,
-                            reconciled_size,
-                        )
-                        store.save_position_open(
-                            position_id=active_position.position_id,
-                            strategy_name=active_position.strategy_name,
-                            side=active_position.side,
-                            entry_price=float(active_position.entry_price),
-                            entry_ts=active_position.entry_ts.isoformat(),
-                            size=float(active_position.size),
-                        )
-                        store.save_service_event(
-                            strategy_name=active_position.strategy_name,
-                            event_type="position_reconciled",
-                            message="restored in-memory position from exchange snapshot",
-                            payload={
-                                "position_id": stable_pid,
-                                "side": reconciled_side,
-                                "entry_price": str(okx_pos.avg_px),
-                                "pos_id": okx_pos.pos_id,
-                            },
-                            level="WARNING",
-                        )
-                    else:
-                        log.debug(
-                            "reconcile skipped: OKX reports non-zero pos but avgPx missing inst_id=%s",
-                            inst_id,
-                        )
+                restored = reconcile_exchange_position_if_needed(
+                    active_position=active_position,
+                    okx_inst_positions=okx_inst_positions,
+                    strategy_name=strategy_name,
+                    tick_size=tick_size,
+                    strategy=strategy,
+                    now=now,
+                )
+                if restored is not None and active_position is None:
+                    active_position = restored
+                    has_open_position = True
+                    store.save_position_open(
+                        position_id=active_position.position_id,
+                        strategy_name=active_position.strategy_name,
+                        side=active_position.side,
+                        entry_price=float(active_position.entry_price),
+                        entry_ts=active_position.entry_ts.isoformat(),
+                        size=float(active_position.size),
+                    )
+                    store.save_service_event(
+                        strategy_name=active_position.strategy_name,
+                        event_type="position_reconciled",
+                        message="restored in-memory position from exchange snapshot",
+                        payload={
+                            "position_id": active_position.position_id,
+                            "side": active_position.side,
+                            "entry_price": str(active_position.entry_price),
+                        },
+                        level="WARNING",
+                    )
 
                 if active_order is not None:
                     local_order_id = active_order.client_id
@@ -252,7 +213,7 @@ async def run_baseline_loop_with_limits(
                             position_side: Literal["long", "short"] = (
                                 "long" if order.side == "buy" else "short"
                             )
-                            active_position = _build_active_position(
+                            active_position = build_active_position(
                                 position_id=new_client_order_id(prefix="pos"),
                                 strategy_name=active_order.strategy_name,
                                 side=position_side,
@@ -287,7 +248,7 @@ async def run_baseline_loop_with_limits(
                             )
                         else:
                             if active_position is not None:
-                                gross_pnl = _calc_gross_pnl(active_position, fill_price)
+                                gross_pnl = calc_gross_pnl(active_position, fill_price)
                                 holding = (now - active_position.entry_ts).total_seconds()
                                 trade = TradeResult(
                                     position_id=active_position.position_id,
@@ -337,14 +298,38 @@ async def run_baseline_loop_with_limits(
                         active_order = None
                         has_active_order = False
                     elif order and order.state in {"canceled", "rejected"}:
-                        log.warning("entry order not filled: ord_id=%s state=%s", order.ord_id, order.state)
-                        store.save_service_event(
-                            strategy_name=active_order.strategy_name,
-                            event_type="entry_not_filled",
-                            message="entry order canceled/rejected",
-                            payload={"ord_id": order.ord_id, "state": order.state},
-                            level="WARNING",
-                        )
+                        if active_order.purpose == "exit" and active_position is not None:
+                            active_position.exit_maker_attempts += 1
+                            log.warning(
+                                "exit order not filled: ord_id=%s state=%s attempts=%s",
+                                order.ord_id,
+                                order.state,
+                                active_position.exit_maker_attempts,
+                            )
+                            store.save_service_event(
+                                strategy_name=active_order.strategy_name,
+                                event_type="exit_not_filled",
+                                message="exit order canceled/rejected",
+                                payload={
+                                    "ord_id": order.ord_id,
+                                    "state": order.state,
+                                    "attempts": active_position.exit_maker_attempts,
+                                },
+                                level="WARNING",
+                            )
+                        else:
+                            log.warning(
+                                "entry order not filled: ord_id=%s state=%s",
+                                order.ord_id,
+                                order.state,
+                            )
+                            store.save_service_event(
+                                strategy_name=active_order.strategy_name,
+                                event_type="entry_not_filled",
+                                message="entry order canceled/rejected",
+                                payload={"ord_id": order.ord_id, "state": order.state},
+                                level="WARNING",
+                            )
                         store.save_order(
                             local_order_id=local_order_id,
                             strategy_name=active_order.strategy_name,
@@ -378,7 +363,7 @@ async def run_baseline_loop_with_limits(
                                     continue
                                 raise
                             best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
-                            reprice = _maker_price_for_side(
+                            reprice = maker_price_for_side(
                                 side=active_order.side,
                                 best_bid=best_bid,
                                 best_ask=best_ask,
@@ -488,7 +473,13 @@ async def run_baseline_loop_with_limits(
                             except RuntimeError as exc:
                                 if not _is_okx_cancel_already_done_error(exc):
                                     raise
+                            if active_order.purpose == "exit" and active_position is not None:
+                                active_position.exit_maker_attempts += 1
                             active_order = None
+
+                if active_order is not None:
+                    await asyncio.sleep(settings.loop_sleep_sec)
+                    continue
 
                 if active_position is None:
                     if control is not None and not control.allow_new_entries:
@@ -527,7 +518,7 @@ async def run_baseline_loop_with_limits(
                             "buy" if signal.side == "long" else "sell"
                         )
                         best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
-                        maker_px = _maker_price_for_side(
+                        maker_px = maker_price_for_side(
                             side=order_side,
                             best_bid=best_bid,
                             best_ask=best_ask,
@@ -587,25 +578,59 @@ async def run_baseline_loop_with_limits(
                                 },
                             )
                 else:
-                    reason = _check_exit_reason(active_position, ticker.last, now)
+                    reason = check_exit_reason(active_position, ticker.last, now)
                     if reason:
-                        exit_side = "sell" if active_position.side == "long" else "buy"
-                        best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
-                        maker_px = _maker_price_for_side(
-                            side=exit_side,
-                            best_bid=best_bid,
-                            best_ask=best_ask,
-                            tick_size=tick_size,
+                        exit_side: Literal["buy", "sell"] = (
+                            "sell" if active_position.side == "long" else "buy"
                         )
-                        exit_client_id = new_client_order_id(prefix="exit")
+                        use_market = should_use_market_exit(
+                            position=active_position,
+                            now=now,
+                            config=strategy.config,
+                        )
+                        exit_client_id = new_client_order_id(
+                            prefix="exit-mkt" if use_market else "exit"
+                        )
                         try:
-                            exit_order_id = await ctx.exchange.place_limit_post_only(
-                                side=exit_side,
-                                size=str(active_position.size),
-                                price=maker_px,
-                                cl_ord_id=exit_client_id,
-                                reduce_only=True,
-                            )
+                            if use_market:
+                                exit_order_id = await ctx.exchange.place_market_order(
+                                    side=exit_side,
+                                    size=str(active_position.size),
+                                    cl_ord_id=exit_client_id,
+                                    reduce_only=True,
+                                )
+                                exit_px = ticker.last
+                                order_type = "market"
+                                log.warning(
+                                    "%s triggered, exit market submitted ord_id=%s attempts=%s",
+                                    reason,
+                                    exit_order_id,
+                                    active_position.exit_maker_attempts,
+                                )
+                            else:
+                                best_bid, best_ask = await ctx.exchange.get_best_bid_ask(
+                                    inst_id=inst_id
+                                )
+                                exit_px = maker_price_for_side(
+                                    side=exit_side,
+                                    best_bid=best_bid,
+                                    best_ask=best_ask,
+                                    tick_size=tick_size,
+                                )
+                                exit_order_id = await ctx.exchange.place_limit_post_only(
+                                    side=exit_side,
+                                    size=str(active_position.size),
+                                    price=exit_px,
+                                    cl_ord_id=exit_client_id,
+                                    reduce_only=True,
+                                )
+                                order_type = "post_only"
+                                log.info(
+                                    "%s triggered, exit maker submitted ord_id=%s px=%s",
+                                    reason,
+                                    exit_order_id,
+                                    exit_px,
+                                )
                         except RuntimeError as exc:
                             if _is_okx_reduce_sync_error(exc):
                                 log.warning(
@@ -672,25 +697,25 @@ async def run_baseline_loop_with_limits(
                             reduce_only=True,
                             size=str(active_position.size),
                         )
-                        log.info(
-                            "%s triggered, exit maker submitted ord_id=%s px=%s",
-                            reason,
-                            exit_order_id,
-                            maker_px,
-                        )
+                        exit_event = f"{reason.lower()}_exit_market" if use_market else f"{reason.lower()}_exit"
                         store.save_service_event(
                             strategy_name=active_position.strategy_name,
-                            event_type=f"{reason.lower()}_exit",
-                            message=f"{reason} exit submitted",
-                            payload={"ord_id": exit_order_id, "position_id": active_position.position_id},
+                            event_type=exit_event,
+                            message=f"{reason} exit submitted ({order_type})",
+                            payload={
+                                "ord_id": exit_order_id,
+                                "position_id": active_position.position_id,
+                                "order_type": order_type,
+                                "market_fallback": use_market,
+                            },
                         )
                         store.save_order(
                             local_order_id=exit_client_id,
                             strategy_name=active_position.strategy_name,
                             exchange_order_id=exit_order_id,
                             side=exit_side,
-                            order_type="post_only",
-                            price=float(maker_px),
+                            order_type=order_type,
+                            price=float(exit_px),
                             size=float(active_position.size),
                             status="submitted",
                             created_at=now.isoformat(),
@@ -730,72 +755,6 @@ async def run_baseline_loop_with_limits(
 def _is_market_data_fresh(ts_ms: int, now: datetime) -> bool:
     tick_ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
     return now - tick_ts <= timedelta(seconds=10)
-
-
-def _build_active_position(
-    *,
-    position_id: str,
-    strategy_name: str,
-    side: Literal["long", "short"],
-    entry_price: Decimal,
-    entry_ts: datetime,
-    size: Decimal,
-    tick_size: Decimal,
-    strategy: StrategyPlugin,
-) -> ActivePosition:
-    tp_delta = tick_size * Decimal(strategy.config.take_profit_ticks)
-    sl_delta = tick_size * Decimal(strategy.config.stop_loss_ticks)
-    if side == "long":
-        tp = entry_price + tp_delta
-        sl = entry_price - sl_delta
-    else:
-        tp = entry_price - tp_delta
-        sl = entry_price + sl_delta
-    return ActivePosition(
-        position_id=position_id,
-        strategy_name=strategy_name,
-        side=side,
-        entry_price=entry_price,
-        entry_ts=entry_ts,
-        size=size,
-        tp_price=tp,
-        sl_price=sl,
-        timeout_at=entry_ts + timedelta(seconds=strategy.config.timeout_sec),
-    )
-
-
-def _check_exit_reason(position: ActivePosition, price: Decimal, now: datetime) -> str | None:
-    if now >= position.timeout_at:
-        return "timeout"
-    if position.side == "long":
-        if price >= position.tp_price:
-            return "tp"
-        if price <= position.sl_price:
-            return "sl"
-        return None
-    if price <= position.tp_price:
-        return "tp"
-    if price >= position.sl_price:
-        return "sl"
-    return None
-
-
-def _calc_gross_pnl(position: ActivePosition, exit_price: Decimal) -> Decimal:
-    if position.side == "long":
-        return (exit_price - position.entry_price) * position.size
-    return (position.entry_price - exit_price) * position.size
-
-
-def _maker_price_for_side(
-    *,
-    side: Literal["buy", "sell"],
-    best_bid: Decimal,
-    best_ask: Decimal,
-    tick_size: Decimal,
-) -> Decimal:
-    if side == "buy":
-        return best_bid.quantize(tick_size)
-    return best_ask.quantize(tick_size)
 
 
 def _is_okx_reduce_sync_error(exc: Exception) -> bool:

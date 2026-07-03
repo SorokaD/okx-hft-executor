@@ -4,10 +4,11 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from app.bootstrap import ExecutorContext, build_executor_context
+from app.bootstrap import build_executor_context
 from app.orchestrator import StrategyLoopControl, run_baseline_loop
 from config.settings import Settings, StrategyMode
 from persistence.sqlite_store import SqliteMvpStore
+from strategy.random_baseline.config import RandomBaselineConfig
 
 
 @dataclass(slots=True)
@@ -25,6 +26,7 @@ class StrategyManager:
         self._settings = settings
         self._log = logging.getLogger(__name__)
         self._store = SqliteMvpStore(settings.sqlite_path)
+        self._baseline_runtime = RandomBaselineConfig()
         self._runtimes: dict[str, StrategyRuntime] = {}
         self._stop_event = asyncio.Event()
 
@@ -177,8 +179,29 @@ class StrategyManager:
 
     async def _shutdown_all(self) -> None:
         names = list(self._runtimes.keys())
+        if not names:
+            return
         for strategy_name in names:
-            await self._disable_strategy(strategy_name=strategy_name, mode="force")
+            runtime = self._runtimes.get(strategy_name)
+            if runtime is None:
+                continue
+            runtime.control.request_drain_stop()
+            self._log.info("shutdown drain requested for strategy=%s", strategy_name)
+        tasks = [runtime.task for runtime in self._runtimes.values()]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=self._baseline_runtime.shutdown_drain_sec,
+            )
+        except TimeoutError:
+            self._log.warning(
+                "shutdown drain timed out after %ss, force-stopping strategies",
+                self._baseline_runtime.shutdown_drain_sec,
+            )
+            for strategy_name in list(self._runtimes.keys()):
+                await self._disable_strategy(strategy_name=strategy_name, mode="force")
+            return
+        self._runtimes.clear()
 
     def _resolve_inst_id(self, strategy_name: str) -> str:
         for cfg in self._settings.get_strategy_runtime_configs():
