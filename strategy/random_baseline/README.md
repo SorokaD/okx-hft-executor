@@ -28,9 +28,10 @@
 - `take_profit_ticks = 700`
 - `stop_loss_ticks = 350`
 - `timeout_sec = 300`
-- `exit_market_fallback_enabled = True` — market reduce-only после неудачных maker-exit
-- `exit_maker_max_attempts = 10`
-- `exit_market_grace_sec = 60` — grace после `timeout_at`
+- `exit_maker_max_attempts = 5` — затем market reduce-only
+- `exit_market_grace_sec = 30` — grace после `timeout_at`
+- `exit_maker_reprice_sec = 1` / `exit_maker_max_wait_sec = 8` — быстрее гонять exit за стаканом
+- `exit_stale_reprice_ticks = 3` — немедленный reprice, если exit отстал от touch
 - `shutdown_drain_sec = 25` — ожидание закрытия позиции при остановке процесса
 
 Все параметры заданы в `strategy/random_baseline/config.py` (не через `.env`).

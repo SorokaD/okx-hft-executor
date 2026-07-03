@@ -164,3 +164,24 @@ def expected_exit_side(position: ActivePosition) -> Literal["buy", "sell"]:
 
 def is_probable_exit_order(*, position: ActivePosition, order_side: str) -> bool:
     return order_side == expected_exit_side(position)
+
+
+def is_exit_order_price_stale(
+    *,
+    position: ActivePosition,
+    order_side: str,
+    order_price: Decimal,
+    best_bid: Decimal,
+    best_ask: Decimal,
+    stale_ticks: int,
+    tick_size: Decimal,
+) -> bool:
+    """True, если exit-maker завис далеко от touch и его нужно переставить немедленно."""
+    if stale_ticks <= 0:
+        return False
+    gap = tick_size * Decimal(stale_ticks)
+    if position.side == "long" and order_side == "sell":
+        return best_ask - order_price > gap
+    if position.side == "short" and order_side == "buy":
+        return order_price - best_bid > gap
+    return False
