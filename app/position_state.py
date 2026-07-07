@@ -158,6 +158,40 @@ def maker_price_for_side(
     return best_ask.quantize(tick_size)
 
 
+def clamp_maker_price_to_limits(
+    *,
+    side: Literal["buy", "sell"],
+    price: Decimal,
+    buy_lmt: Decimal,
+    sell_lmt: Decimal,
+    tick_size: Decimal,
+) -> Decimal:
+    """Зажимает post-only цену в динамический price band OKX."""
+    if side == "buy":
+        clamped = min(price, buy_lmt)
+    else:
+        clamped = max(price, sell_lmt)
+    return clamped.quantize(tick_size)
+
+
+def is_entry_order_price_stale(
+    *,
+    order_side: Literal["buy", "sell"],
+    order_price: Decimal,
+    best_bid: Decimal,
+    best_ask: Decimal,
+    stale_ticks: int,
+    tick_size: Decimal,
+) -> bool:
+    """True, если entry-maker завис далеко от touch и его нужно переставить немедленно."""
+    if stale_ticks <= 0:
+        return False
+    gap = tick_size * Decimal(stale_ticks)
+    if order_side == "buy":
+        return best_bid - order_price > gap
+    return order_price - best_ask > gap
+
+
 def expected_exit_side(position: ActivePosition) -> Literal["buy", "sell"]:
     return "sell" if position.side == "long" else "buy"
 

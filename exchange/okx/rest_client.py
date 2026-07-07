@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from config.settings import Settings
+from config.strategy_config import StrategyDeploymentConfig
 from domain.models.order import Order
 from exchange.okx.auth import make_timestamp, sign_okx_request
 from exchange.okx.models import OkxOrder, OkxPosition, OkxTicker
@@ -37,8 +38,14 @@ def _parse_ms_timestamp(value: object) -> int | None:
 class OkxRestClient:
     """Небольшой async-friendly клиент через asyncio.to_thread + urllib."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        deployment: StrategyDeploymentConfig | None = None,
+    ) -> None:
         self._settings = settings
+        self._deployment = deployment
         self._base_url = settings.okx_base_url.rstrip("/")
         self._user_agent = "okx-hft-executor/0.1 (+demo-baseline)"
         if (
@@ -55,6 +62,16 @@ class OkxRestClient:
             self._user_agent,
         )
 
+    def _default_inst_id(self) -> str:
+        if self._deployment is not None:
+            return self._deployment.inst_id
+        raise ValueError("inst_id is not configured; pass deployment to OkxRestClient")
+
+    def _default_td_mode(self) -> str:
+        if self._deployment is not None:
+            return self._deployment.execution.td_mode
+        return "isolated"
+
     async def place_order(self, order: Order) -> str:
         side = "buy" if order.side.value == "buy" else "sell"
         return await self.place_market_order(
@@ -65,7 +82,7 @@ class OkxRestClient:
 
     async def cancel_order(self, client_order_id: str) -> None:
         await self.cancel_order_by_client_id(
-            inst_id=self._settings.okx_inst_id,
+            inst_id=self._default_inst_id(),
             cl_ord_id=client_order_id,
         )
 
@@ -76,10 +93,12 @@ class OkxRestClient:
         size: str,
         cl_ord_id: str,
         reduce_only: bool = False,
+        inst_id: str | None = None,
+        td_mode: str | None = None,
     ) -> str:
         payload: dict[str, Any] = {
-            "instId": self._settings.okx_inst_id,
-            "tdMode": self._settings.okx_td_mode,
+            "instId": inst_id or self._default_inst_id(),
+            "tdMode": td_mode or self._default_td_mode(),
             "side": side,
             "ordType": "market",
             "sz": size,
@@ -104,10 +123,12 @@ class OkxRestClient:
         price: Decimal,
         cl_ord_id: str,
         reduce_only: bool = False,
+        inst_id: str | None = None,
+        td_mode: str | None = None,
     ) -> str:
         payload: dict[str, Any] = {
-            "instId": self._settings.okx_inst_id,
-            "tdMode": self._settings.okx_td_mode,
+            "instId": inst_id or self._default_inst_id(),
+            "tdMode": td_mode or self._default_td_mode(),
             "side": side,
             "ordType": "post_only",
             "sz": size,
@@ -270,6 +291,28 @@ class OkxRestClient:
         best_bid = Decimal(str(bids[0][0]))
         best_ask = Decimal(str(asks[0][0]))
         return best_bid, best_ask
+
+    async def get_price_limits(self, *, inst_id: str) -> OkxPriceLimits:
+        from exchange.okx.models import OkxPriceLimits
+
+        data = await self._request(
+            "GET",
+            "/api/v5/public/price-limit",
+            params={"instId": inst_id},
+            auth=False,
+            expect_list=True,
+        )
+        if not data:
+            raise RuntimeError(f"Price limit data is empty for {inst_id}.")
+        item = data[0]
+        buy_lmt = item.get("buyLmt")
+        sell_lmt = item.get("sellLmt")
+        if not buy_lmt or not sell_lmt:
+            raise RuntimeError(f"buyLmt/sellLmt missing for {inst_id}.")
+        return OkxPriceLimits(
+            buy_lmt=Decimal(str(buy_lmt)),
+            sell_lmt=Decimal(str(sell_lmt)),
+        )
 
     async def _request(
         self,

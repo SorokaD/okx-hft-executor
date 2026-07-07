@@ -137,3 +137,28 @@ def test_is_exit_order_price_stale_long_sell() -> None:
         stale_ticks=3,
         tick_size=Decimal("0.1"),
     )
+
+
+def test_is_entry_order_price_stale_buy() -> None:
+    from app.position_state import is_entry_order_price_stale
+
+    assert is_entry_order_price_stale(
+        order_side="buy",
+        order_price=Decimal("62970.0"),
+        best_bid=Decimal("63096.6"),
+        best_ask=Decimal("63097.9"),
+        stale_ticks=3,
+        tick_size=Decimal("0.1"),
+    )
+
+
+def test_clamp_maker_price_to_limits() -> None:
+    from app.position_state import clamp_maker_price_to_limits
+
+    assert clamp_maker_price_to_limits(
+        side="sell",
+        price=Decimal("63174.0"),
+        buy_lmt=Decimal("66370.2"),
+        sell_lmt=Decimal("63209.7"),
+        tick_size=Decimal("0.1"),
+    ) == Decimal("63209.7")

@@ -4,11 +4,12 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from app.bootstrap import build_executor_context
+from app.bootstrap import ExecutorContext, build_executor_context
 from app.orchestrator import StrategyLoopControl, run_baseline_loop
 from config.settings import Settings, StrategyMode
+from config.strategy_config import StrategyDeploymentConfig, get_strategies_config
 from persistence.sqlite_store import SqliteMvpStore
-from strategy.random_baseline.config import RandomBaselineConfig
+from strategy.random_baseline.config import config_from_params
 
 
 @dataclass(slots=True)
@@ -26,7 +27,7 @@ class StrategyManager:
         self._settings = settings
         self._log = logging.getLogger(__name__)
         self._store = SqliteMvpStore(settings.sqlite_path)
-        self._baseline_runtime = RandomBaselineConfig()
+        self._strategies = get_strategies_config(settings)
         self._runtimes: dict[str, StrategyRuntime] = {}
         self._stop_event = asyncio.Event()
 
@@ -61,52 +62,41 @@ class StrategyManager:
         for cfg in self._settings.get_strategy_runtime_configs():
             if cfg.mode != StrategyMode.ENABLED:
                 continue
-            await self._start_strategy(strategy_name=cfg.strategy_name, inst_id=cfg.inst_id)
+            await self._start_strategy(strategy_name=cfg.strategy_name)
 
-    async def _start_strategy(self, *, strategy_name: str, inst_id: str) -> None:
+    async def _start_strategy(self, *, strategy_name: str) -> None:
         if strategy_name in self._runtimes:
             return
-        strategy_settings = self._settings.model_copy(
-            update={
-                "strategy_name": strategy_name,
-                "okx_inst_id": inst_id,
-            }
-        )
-        ctx = build_executor_context(strategy_settings)
+        deployment = self._strategies.get_deployment(strategy_name)
+        ctx = build_executor_context(self._settings, deployment=deployment)
         control = StrategyLoopControl()
         task = asyncio.create_task(
             self._run_strategy_task(
-                strategy_name=strategy_name,
-                inst_id=inst_id,
+                deployment=deployment,
                 ctx=ctx,
                 control=control,
             )
         )
         self._runtimes[strategy_name] = StrategyRuntime(
             strategy_name=strategy_name,
-            inst_id=inst_id,
+            inst_id=deployment.inst_id,
             task=task,
             control=control,
         )
         self._store.set_strategy_desired_state(strategy_name=strategy_name, desired_state="enabled")
         self._store.set_strategy_runtime_state(strategy_name=strategy_name, runtime_state="running")
-        self._log.info("strategy started: %s (%s)", strategy_name, inst_id)
+        self._log.info("strategy started: %s (%s)", strategy_name, deployment.inst_id)
 
     async def _run_strategy_task(
         self,
         *,
-        strategy_name: str,
-        inst_id: str,
+        deployment: StrategyDeploymentConfig,
         ctx: ExecutorContext,
         control: StrategyLoopControl,
     ) -> None:
+        strategy_name = deployment.strategy_name
         try:
-            await run_baseline_loop(
-                ctx,
-                strategy_name_override=strategy_name,
-                inst_id_override=inst_id,
-                control=control,
-            )
+            await run_baseline_loop(ctx, deployment=deployment, control=control)
             self._store.set_strategy_runtime_state(strategy_name=strategy_name, runtime_state="stopped")
         except asyncio.CancelledError:
             self._store.set_strategy_runtime_state(strategy_name=strategy_name, runtime_state="stopped")
@@ -130,8 +120,7 @@ class StrategyManager:
             command_mode = command["command_mode"]
             try:
                 if command_type == "enable":
-                    inst_id = self._resolve_inst_id(strategy_name)
-                    await self._start_strategy(strategy_name=strategy_name, inst_id=inst_id)
+                    await self._start_strategy(strategy_name=strategy_name)
                 elif command_type == "disable":
                     await self._disable_strategy(
                         strategy_name=strategy_name,
@@ -139,8 +128,7 @@ class StrategyManager:
                     )
                 elif command_type == "restart":
                     await self._disable_strategy(strategy_name=strategy_name, mode="force")
-                    inst_id = self._resolve_inst_id(strategy_name)
-                    await self._start_strategy(strategy_name=strategy_name, inst_id=inst_id)
+                    await self._start_strategy(strategy_name=strategy_name)
                 else:
                     raise ValueError(f"Unsupported strategy command: {command_type}")
                 self._store.finish_strategy_command(command_id=cid, status="done")
@@ -191,24 +179,21 @@ class StrategyManager:
         try:
             await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
-                timeout=self._baseline_runtime.shutdown_drain_sec,
+                timeout=self._shutdown_drain_sec(),
             )
         except TimeoutError:
             self._log.warning(
                 "shutdown drain timed out after %ss, force-stopping strategies",
-                self._baseline_runtime.shutdown_drain_sec,
+                self._shutdown_drain_sec(),
             )
             for strategy_name in list(self._runtimes.keys()):
                 await self._disable_strategy(strategy_name=strategy_name, mode="force")
             return
         self._runtimes.clear()
 
-    def _resolve_inst_id(self, strategy_name: str) -> str:
-        for cfg in self._settings.get_strategy_runtime_configs():
-            if cfg.strategy_name == strategy_name:
-                return cfg.inst_id
-        rows = self._store.list_strategies_registry()
-        for row in rows:
-            if row["strategy_name"] == strategy_name:
-                return row["inst_id"]
-        return self._settings.okx_inst_id
+    def _shutdown_drain_sec(self) -> float:
+        try:
+            dep = self._strategies.get_default_deployment()
+            return config_from_params(dep.params).shutdown_drain_sec
+        except Exception:
+            return 25.0

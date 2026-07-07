@@ -14,7 +14,7 @@ from app.position_state import (
     is_probable_exit_order,
 )
 from exchange.okx.models import OkxOrder, OkxPosition
-from persistence.sqlite_store import SqliteMvpStore
+from persistence.executor_store import ExecutorStore
 from strategy.contracts import StrategyPlugin
 
 log = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 async def bootstrap_position_on_startup(
     *,
     ctx: ExecutorContext,
-    store: SqliteMvpStore,
+    store: ExecutorStore,
     strategy: StrategyPlugin,
     strategy_name: str,
     inst_id: str,

@@ -1,0 +1,36 @@
+# Шаблон: скопируйте в config/strategies.yaml и настройте под себя.
+default: random_baseline_v1
+
+strategies:
+  random_baseline_v1:
+    enabled: true
+    inst_id: BTC-USDT-SWAP
+    execution:
+      td_mode: isolated
+      ord_type: post_only
+      order_size: "0.01"
+      maker_reprice_sec: 3
+      maker_max_wait_sec: 20
+    decision_step_sec: 30
+    cooldown_sec: 20
+    take_profit_ticks: 700
+    stop_loss_ticks: 350
+    timeout_sec: 300
+    exit_market_fallback_enabled: true
+    exit_maker_max_attempts: 5
+    exit_market_grace_sec: 30
+    exit_maker_reprice_sec: 1
+    exit_maker_max_wait_sec: 8
+    exit_stale_reprice_ticks: 3
+    entry_stale_reprice_ticks: 3
+    shutdown_drain_sec: 25.0
+
+  mean_reversion_v1:
+    enabled: false
+    inst_id: ETH-USDT-SWAP
+    execution:
+      td_mode: isolated
+      ord_type: post_only
+      order_size: "0.01"
+      maker_reprice_sec: 3
+      maker_max_wait_sec: 20

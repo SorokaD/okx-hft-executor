@@ -10,7 +10,7 @@
 - запускает стратегии параллельно (сейчас торговая логика baseline);
 - исполняет заявки через OKX REST или stub (по режиму);
 - сопровождает позицию (TP/SL/timeout, maker reprice, reconciliation);
-- сохраняет сигналы, ордера, позиции, PnL и service events в БД;
+- сохраняет сигналы, ордера, позиции, PnL и service events в БД (SQLite сейчас; PostgreSQL `okx_exec` — DDL готов);
 - принимает команды включения/выключения стратегий через очередь команд.
 
 ## Ключевые подсистемы
@@ -38,6 +38,15 @@
   - `service_events`
 
 Это позволяет безопасно добавлять новые стратегии и управлять ими без остановки сервиса.
+
+## Хранение данных
+
+| Слой | Где | Документация |
+|------|-----|--------------|
+| Операционный журнал | SQLite `OKX_SQLITE_PATH` | [database/sqlite_mvp.md](database/sqlite_mvp.md) |
+| Аналитика / DWH | PostgreSQL схема `okx_exec` | [database/README.md](database/README.md) |
+
+DDL: `migrations/postgres/`. Запись в PostgreSQL из кода — следующий этап (dual-write).
 
 ## Как добавить новую стратегию
 

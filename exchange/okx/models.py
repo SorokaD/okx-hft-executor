@@ -31,3 +31,11 @@ class OkxTicker:
     last: Decimal
     ts_ms: int
 
+
+@dataclass(slots=True)
+class OkxPriceLimits:
+    """Динамические price limits OKX (GET /api/v5/public/price-limit)."""
+
+    buy_lmt: Decimal
+    sell_lmt: Decimal
+

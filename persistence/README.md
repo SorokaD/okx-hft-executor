@@ -40,6 +40,14 @@
 - **accounting** может читать историю исполнений.
 - **observability** — метрики ошибок БД.
 
+## Документация по СУБД
+
+Полное описание SQLite MVP и PostgreSQL `okx_exec`: **[docs/database/README.md](../docs/database/README.md)**.
+
+- Текущий код пишет в **SQLite** (`sqlite_store.py`).
+- DDL для **PostgreSQL/TimescaleDB**: `migrations/postgres/`.
+- Dual-write в PG — следующий этап.
+
 ## Примеры будущего расширения
 
 - event sourcing + проекции;
