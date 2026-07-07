@@ -6,8 +6,9 @@ from strategy.registry import create_strategy
 
 
 def test_create_strategy_random_baseline() -> None:
-    strategy = create_strategy("random_baseline_v1")
+    strategy = create_strategy("random_baseline_v1", params={"decision_step_sec": 10})
     assert strategy.strategy_name == "random_baseline_v1"
+    assert strategy.config.decision_step_sec == 10
 
 
 def test_create_strategy_mean_reversion() -> None:

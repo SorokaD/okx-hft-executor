@@ -11,8 +11,9 @@ from decimal import Decimal
 from datetime import datetime, timezone
 
 from config.settings import Settings
+from config.strategy_config import StrategyDeploymentConfig
 from domain.models.order import Order
-from exchange.okx.models import OkxOrder, OkxPosition, OkxTicker
+from exchange.okx.models import OkxOrder, OkxPosition, OkxPriceLimits, OkxTicker
 
 log = logging.getLogger(__name__)
 
@@ -20,8 +21,14 @@ log = logging.getLogger(__name__)
 class OkxStubExchangeClient:
     """Реализует подмножество ExchangeClient без I/O."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        deployment: StrategyDeploymentConfig | None = None,
+    ) -> None:
         self._settings = settings
+        self._deployment = deployment
         self._price = Decimal("50000")
         self._tick_counter = 0
         self._orders: dict[str, OkxOrder] = {}
@@ -38,8 +45,16 @@ class OkxStubExchangeClient:
         log.debug("stub cancel_order_by_client_id %s", cl_ord_id)
 
     async def place_market_order(
-        self, *, side: str, size: str, cl_ord_id: str, reduce_only: bool = False
+        self,
+        *,
+        side: str,
+        size: str,
+        cl_ord_id: str,
+        reduce_only: bool = False,
+        inst_id: str | None = None,
+        td_mode: str | None = None,
     ) -> str:
+        _ = inst_id, td_mode
         _ = reduce_only
         ord_id = f"stub-{cl_ord_id}"
         order = OkxOrder(
@@ -108,7 +123,11 @@ class OkxStubExchangeClient:
         shift = Decimal("25") if self._tick_counter % 2 == 0 else Decimal("-20")
         self._price += shift
         ts_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        return OkxTicker(inst_id=self._settings.okx_inst_id, last=self._price, ts_ms=ts_ms)
+        return OkxTicker(
+            inst_id=self._deployment.inst_id if self._deployment else "BTC-USDT-SWAP",
+            last=self._price,
+            ts_ms=ts_ms,
+        )
 
     async def get_tick_size(self, *, inst_id: str) -> Decimal:
         _ = inst_id
@@ -117,3 +136,10 @@ class OkxStubExchangeClient:
     async def get_best_bid_ask(self, *, inst_id: str) -> tuple[Decimal, Decimal]:
         _ = inst_id
         return (self._price - Decimal("0.1"), self._price + Decimal("0.1"))
+
+    async def get_price_limits(self, *, inst_id: str) -> OkxPriceLimits:
+        _ = inst_id
+        return OkxPriceLimits(
+            buy_lmt=self._price * Decimal("1.05"),
+            sell_lmt=self._price * Decimal("0.95"),
+        )

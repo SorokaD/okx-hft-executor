@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -21,5 +22,13 @@ class RandomBaselineConfig:
     exit_maker_max_wait_sec: int = 8
     # Если exit-ордер отстал от touch больше чем на N тиков — reprice сразу.
     exit_stale_reprice_ticks: int = 3
+    # Если entry-maker отстал от touch больше чем на N тиков — reprice сразу.
+    entry_stale_reprice_ticks: int = 3
     # При остановке процесса (docker stop / редеплой): ждать закрытия позиции, сек.
     shutdown_drain_sec: float = 25.0
+
+
+def config_from_params(params: dict[str, Any]) -> RandomBaselineConfig:
+    """Собирает RandomBaselineConfig из YAML-блока стратегии."""
+    valid = {f.name for f in fields(RandomBaselineConfig)}
+    return RandomBaselineConfig(**{k: v for k, v in params.items() if k in valid})

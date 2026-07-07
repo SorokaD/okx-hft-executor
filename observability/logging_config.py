@@ -9,5 +9,5 @@ from config.settings import Settings
 
 def configure_logging_placeholder(settings: Settings) -> None:
     """Точка расширения: форматтеры, корреляционные поля, уровень из настроек."""
-    _ = settings
-    logging.getLogger("okx_hft_executor").setLevel(logging.INFO)
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    logging.getLogger("okx_hft_executor").setLevel(level)

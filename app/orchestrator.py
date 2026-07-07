@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Literal
 
 from app.bootstrap import ExecutorContext
+from config.strategy_config import StrategyDeploymentConfig, get_strategies_config
 from app.position_reconcile import bootstrap_position_on_startup, reconcile_exchange_position_if_needed
 from app.position_state import (
     ActiveOrder,
@@ -17,12 +18,15 @@ from app.position_state import (
     build_active_position,
     calc_gross_pnl,
     check_exit_reason,
+    clamp_maker_price_to_limits,
+    is_entry_order_price_stale,
     is_exit_order_price_stale,
     maker_price_for_side,
     should_use_market_exit,
 )
 from domain.value_objects.instrument_id import InstrumentId
-from persistence.sqlite_store import SqliteMvpStore, TradeResult
+from persistence.executor_store import ExecutorStore
+from persistence.sqlite_store import TradeResult
 from services.id_generation import new_client_order_id
 from strategy.registry import create_strategy
 
@@ -46,8 +50,7 @@ class StrategyLoopControl:
 async def run_baseline_loop(
     ctx: ExecutorContext,
     *,
-    strategy_name_override: str | None = None,
-    inst_id_override: str | None = None,
+    deployment: StrategyDeploymentConfig | None = None,
     control: StrategyLoopControl | None = None,
     run_seconds: int | None = None,
     max_loops: int | None = None,
@@ -55,8 +58,7 @@ async def run_baseline_loop(
     """Цикл baseline MVP, опционально с лимитами smoke-run."""
     return await run_baseline_loop_with_limits(
         ctx,
-        strategy_name_override=strategy_name_override,
-        inst_id_override=inst_id_override,
+        deployment=deployment,
         control=control,
         run_seconds=run_seconds,
         max_loops=max_loops,
@@ -66,8 +68,7 @@ async def run_baseline_loop(
 async def run_baseline_loop_with_limits(
     ctx: ExecutorContext,
     *,
-    strategy_name_override: str | None = None,
-    inst_id_override: str | None = None,
+    deployment: StrategyDeploymentConfig | None = None,
     control: StrategyLoopControl | None = None,
     run_seconds: int | None = None,
     max_loops: int | None = None,
@@ -75,10 +76,31 @@ async def run_baseline_loop_with_limits(
     """Цикл baseline MVP с optional авто-остановкой для smoke-run."""
     log = logging.getLogger(__name__)
     settings = ctx.settings
-    strategy_name = strategy_name_override or settings.strategy_name
-    strategy = create_strategy(strategy_name)
-    store = SqliteMvpStore(settings.sqlite_path)
-    inst_id = inst_id_override or settings.okx_inst_id
+    dep = deployment or ctx.deployment
+    if dep is None:
+        dep = get_strategies_config(settings).get_default_deployment()
+    strategy_name = dep.strategy_name
+    inst_id = dep.inst_id
+    exec_cfg = dep.execution
+    strategy = create_strategy(strategy_name, params=dep.params)
+    store = ExecutorStore.create(
+        settings,
+        strategy_name=strategy_name,
+        inst_id=inst_id,
+        td_mode=exec_cfg.td_mode,
+    )
+    store.set_strategy_params(
+        take_profit_ticks=strategy.config.take_profit_ticks,
+        stop_loss_ticks=strategy.config.stop_loss_ticks,
+        timeout_sec=strategy.config.timeout_sec,
+    )
+    await store.open(
+        extra_json={
+            "take_profit_ticks": strategy.config.take_profit_ticks,
+            "stop_loss_ticks": strategy.config.stop_loss_ticks,
+            "timeout_sec": strategy.config.timeout_sec,
+        }
+    )
     started_at = ctx.clock.now_utc()
     loop_count = 0
     try:
@@ -100,9 +122,10 @@ async def run_baseline_loop_with_limits(
         settings.okx_flag_demo,
     )
     log.info(
-        "inst_id=%s sqlite_path=%s loop_sleep=%s tick_size=%s",
+        "inst_id=%s sqlite_path=%s postgres_run_id=%s loop_sleep=%s tick_size=%s",
         inst_id,
         settings.sqlite_path,
+        store.run_id,
         settings.loop_sleep_sec,
         tick_size,
     )
@@ -174,6 +197,13 @@ async def run_baseline_loop_with_limits(
                 okx_inst_positions = [p for p in positions if p.inst_id == inst_id]
                 if not okx_inst_positions and positions:
                     okx_inst_positions = list(positions)
+                if active_order is None and active_position is None:
+                    await _sweep_untracked_executor_orders(
+                        ctx=ctx,
+                        inst_id=inst_id,
+                        open_orders=open_orders,
+                        log=log,
+                    )
                 restored = reconcile_exchange_position_if_needed(
                     active_position=active_position,
                     okx_inst_positions=okx_inst_positions,
@@ -220,7 +250,7 @@ async def run_baseline_loop_with_limits(
                                 side=position_side,
                                 entry_price=fill_price,
                                 entry_ts=now,
-                                size=order.fill_sz if order.fill_sz > 0 else Decimal(settings.okx_order_size),
+                                size=order.fill_sz if order.fill_sz > 0 else Decimal(exec_cfg.order_size),
                                 tick_size=tick_size,
                                 strategy=strategy,
                             )
@@ -336,7 +366,7 @@ async def run_baseline_loop_with_limits(
                             strategy_name=active_order.strategy_name,
                             exchange_order_id=order.ord_id,
                             side=order.side,
-                            order_type=settings.okx_ord_type,
+                            order_type=exec_cfg.ord_type,
                             price=float(order.avg_px or order.px) if (order.avg_px or order.px) else None,
                             size=float(order.sz),
                             status=order.state,
@@ -350,46 +380,55 @@ async def run_baseline_loop_with_limits(
                         reprice_sec = (
                             strategy.config.exit_maker_reprice_sec
                             if is_exit
-                            else settings.okx_maker_reprice_sec
+                            else exec_cfg.maker_reprice_sec
                         )
                         max_wait_sec = (
                             strategy.config.exit_maker_max_wait_sec
                             if is_exit
-                            else settings.okx_maker_max_wait_sec
+                            else exec_cfg.maker_max_wait_sec
                         )
                         order_px = order.px or order.avg_px
-                        stale_exit = (
-                            is_exit
-                            and active_position is not None
-                            and order_px is not None
-                        )
-                        if stale_exit:
+                        stale_reprice = False
+                        if order_px is not None:
                             best_bid, best_ask = await ctx.exchange.get_best_bid_ask(
                                 inst_id=inst_id
                             )
-                            stale_exit = is_exit_order_price_stale(
-                                position=active_position,
-                                order_side=active_order.side,
-                                order_price=order_px,
-                                best_bid=best_bid,
-                                best_ask=best_ask,
-                                stale_ticks=strategy.config.exit_stale_reprice_ticks,
-                                tick_size=tick_size,
-                            )
+                            if is_exit and active_position is not None:
+                                stale_reprice = is_exit_order_price_stale(
+                                    position=active_position,
+                                    order_side=active_order.side,
+                                    order_price=order_px,
+                                    best_bid=best_bid,
+                                    best_ask=best_ask,
+                                    stale_ticks=strategy.config.exit_stale_reprice_ticks,
+                                    tick_size=tick_size,
+                                )
+                            elif not is_exit:
+                                stale_reprice = is_entry_order_price_stale(
+                                    order_side=active_order.side,
+                                    order_price=order_px,
+                                    best_bid=best_bid,
+                                    best_ask=best_ask,
+                                    stale_ticks=strategy.config.entry_stale_reprice_ticks,
+                                    tick_size=tick_size,
+                                )
                         if (
-                            (reprice_elapsed >= reprice_sec or stale_exit)
+                            (reprice_elapsed >= reprice_sec or stale_reprice)
                             and max_wait_elapsed <= max_wait_sec
                         ):
-                            if stale_exit:
+                            if stale_reprice:
                                 log.warning(
-                                    "exit order stale vs touch: ord_id=%s px=%s, reprice now",
+                                    "%s order stale vs touch: ord_id=%s px=%s, reprice now",
+                                    active_order.purpose,
                                     active_order.order_id,
                                     order_px,
                                 )
                             try:
-                                await ctx.exchange.cancel_order_by_client_id(
+                                await _cancel_order_best_effort(
+                                    ctx=ctx,
                                     inst_id=inst_id,
-                                    cl_ord_id=active_order.client_id,
+                                    store=store,
+                                    active_order=active_order,
                                 )
                             except RuntimeError as exc:
                                 if _is_okx_cancel_already_done_error(exc):
@@ -400,7 +439,9 @@ async def run_baseline_loop_with_limits(
                                     continue
                                 raise
                             best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
-                            reprice = maker_price_for_side(
+                            reprice = await _resolve_maker_price(
+                                ctx,
+                                inst_id=inst_id,
                                 side=active_order.side,
                                 best_bid=best_bid,
                                 best_ask=best_ask,
@@ -418,6 +459,15 @@ async def run_baseline_loop_with_limits(
                                     reduce_only=active_order.reduce_only,
                                 )
                             except RuntimeError as exc:
+                                if _is_okx_price_limit_error(exc):
+                                    log.warning(
+                                        "reprice skipped: OKX price limit reject ord_id=%s: %s",
+                                        active_order.order_id,
+                                        exc,
+                                    )
+                                    active_order = None
+                                    has_active_order = False
+                                    continue
                                 # OKX: 51169 no position to reduce; 51170 reduce-only wrong side vs exchange book.
                                 if active_order.purpose == "exit" and _is_okx_reduce_sync_error(exc):
                                     log.warning(
@@ -484,6 +534,11 @@ async def run_baseline_loop_with_limits(
                                 new_order_id,
                                 reprice,
                             )
+                            old_client_id = active_order.client_id
+                            old_strategy = active_order.strategy_name
+                            old_side = active_order.side
+                            old_reduce = active_order.reduce_only
+                            old_size = active_order.size
                             active_order = ActiveOrder(
                                 order_id=new_order_id,
                                 client_id=new_client_id,
@@ -495,6 +550,20 @@ async def run_baseline_loop_with_limits(
                                 reduce_only=active_order.reduce_only,
                                 size=active_order.size,
                             )
+                            store.save_order(
+                                local_order_id=new_client_id,
+                                strategy_name=old_strategy,
+                                exchange_order_id=new_order_id,
+                                side=old_side,
+                                order_type="post_only",
+                                price=float(reprice),
+                                size=float(Decimal(old_size)),
+                                status="submitted",
+                                created_at=now.isoformat(),
+                                parent_order_id_local=old_client_id,
+                                position_id=active_position.position_id if active_position else None,
+                                reduce_only=old_reduce,
+                            )
                         elif max_wait_elapsed > max_wait_sec:
                             log.warning(
                                 "maker order timeout: purpose=%s ord_id=%s wait=%ss",
@@ -502,15 +571,21 @@ async def run_baseline_loop_with_limits(
                                 active_order.order_id,
                                 max_wait_sec,
                             )
-                            try:
-                                await ctx.exchange.cancel_order_by_client_id(
-                                    inst_id=inst_id,
-                                    cl_ord_id=active_order.client_id,
-                                )
-                            except RuntimeError as exc:
-                                if not _is_okx_cancel_already_done_error(exc):
-                                    raise
-                            if active_order.purpose == "exit" and active_position is not None:
+                            timed_out = active_order
+                            await _cancel_order_best_effort(
+                                ctx=ctx,
+                                inst_id=inst_id,
+                                store=store,
+                                active_order=timed_out,
+                            )
+                            await _verify_order_canceled(
+                                ctx=ctx,
+                                inst_id=inst_id,
+                                order_id=timed_out.order_id,
+                                client_id=timed_out.client_id,
+                                log=log,
+                            )
+                            if timed_out.purpose == "exit" and active_position is not None:
                                 active_position.exit_maker_attempts += 1
                             active_order = None
 
@@ -554,19 +629,40 @@ async def run_baseline_loop_with_limits(
                         order_side: Literal["buy", "sell"] = (
                             "buy" if signal.side == "long" else "sell"
                         )
-                        best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
-                        maker_px = maker_price_for_side(
-                            side=order_side,
-                            best_bid=best_bid,
-                            best_ask=best_ask,
-                            tick_size=tick_size,
-                        )
-                        exchange_order_id = await ctx.exchange.place_limit_post_only(
-                            side=order_side,
-                            size=settings.okx_order_size,
-                            price=maker_px,
-                            cl_ord_id=domain_signal.signal_id,
-                        )
+                        try:
+                            maker_px = await _resolve_maker_price(
+                                ctx,
+                                inst_id=inst_id,
+                                side=order_side,
+                                tick_size=tick_size,
+                            )
+                            exchange_order_id = await ctx.exchange.place_limit_post_only(
+                                side=order_side,
+                                size=exec_cfg.order_size,
+                                price=maker_px,
+                                cl_ord_id=domain_signal.signal_id,
+                            )
+                        except RuntimeError as exc:
+                            if _is_okx_price_limit_error(exc):
+                                log.warning(
+                                    "entry submit skipped: OKX price limit reject side=%s: %s",
+                                    order_side,
+                                    exc,
+                                )
+                                store.save_service_event(
+                                    strategy_name=signal.strategy_name,
+                                    event_type="entry_price_limit_reject",
+                                    message="entry order rejected by OKX price limit",
+                                    payload={
+                                        "side": order_side,
+                                        "signal_id": signal.signal_id,
+                                        "error": str(exc),
+                                    },
+                                    level="WARNING",
+                                )
+                                await asyncio.sleep(settings.loop_sleep_sec)
+                                continue
+                            raise
                         active_order = ActiveOrder(
                             order_id=exchange_order_id,
                             client_id=domain_signal.signal_id,
@@ -576,7 +672,7 @@ async def run_baseline_loop_with_limits(
                             created_at=now,
                             last_reprice_at=now,
                             reduce_only=False,
-                                size=settings.okx_order_size,
+                                size=exec_cfg.order_size,
                         )
                         log.info(
                             "entry maker order submitted: side=%s ord_id=%s px=%s",
@@ -597,9 +693,10 @@ async def run_baseline_loop_with_limits(
                             side=order_side,
                             order_type="post_only",
                             price=float(maker_px),
-                            size=float(Decimal(settings.okx_order_size)),
+                            size=float(Decimal(exec_cfg.order_size)),
                             status="submitted",
                             created_at=now.isoformat(),
+                            signal_id=domain_signal.signal_id,
                         )
                     else:
                         if int(now.timestamp()) % strategy.config.decision_step_sec == 0:
@@ -645,13 +742,10 @@ async def run_baseline_loop_with_limits(
                                     active_position.exit_maker_attempts,
                                 )
                             else:
-                                best_bid, best_ask = await ctx.exchange.get_best_bid_ask(
-                                    inst_id=inst_id
-                                )
-                                exit_px = maker_price_for_side(
+                                exit_px = await _resolve_maker_price(
+                                    ctx,
+                                    inst_id=inst_id,
                                     side=exit_side,
-                                    best_bid=best_bid,
-                                    best_ask=best_ask,
                                     tick_size=tick_size,
                                 )
                                 exit_order_id = await ctx.exchange.place_limit_post_only(
@@ -756,6 +850,8 @@ async def run_baseline_loop_with_limits(
                             size=float(active_position.size),
                             status="submitted",
                             created_at=now.isoformat(),
+                            position_id=active_position.position_id,
+                            reduce_only=True,
                         )
 
             except Exception as exc:  # noqa: BLE001
@@ -763,7 +859,7 @@ async def run_baseline_loop_with_limits(
                     "baseline iteration failed (retrying): %s: %s",
                     type(exc).__name__,
                     exc,
-                    exc_info=True,
+                    exc_info=not _is_okx_price_limit_error(exc),
                 )
                 store.save_service_event(
                     strategy_name=active_position.strategy_name if active_position else "system",
@@ -772,8 +868,11 @@ async def run_baseline_loop_with_limits(
                     payload={"error": str(exc), "error_type": type(exc).__name__},
                     level="ERROR",
                 )
-                _backoff = min(30.0, max(settings.loop_sleep_sec * 5.0, 5.0))
-                await asyncio.sleep(_backoff)
+                if _is_okx_price_limit_error(exc):
+                    await asyncio.sleep(settings.loop_sleep_sec)
+                else:
+                    _backoff = min(30.0, max(settings.loop_sleep_sec * 5.0, 5.0))
+                    await asyncio.sleep(_backoff)
                 continue
 
             await asyncio.sleep(settings.loop_sleep_sec)
@@ -785,13 +884,126 @@ async def run_baseline_loop_with_limits(
         log.info("positions: %s", summary["positions"])
         log.info("trade_results: %s", summary["trade_results"])
         log.info("service_events: %s", summary["service_events"])
-        store.close()
+        stop_reason = None
+        if control is not None and control.stop_mode != "none":
+            stop_reason = control.stop_mode
+        await store.aclose(status="stopped", stop_reason=stop_reason)
     return summary
 
 
 def _is_market_data_fresh(ts_ms: int, now: datetime) -> bool:
     tick_ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
     return now - tick_ts <= timedelta(seconds=10)
+
+
+async def _resolve_maker_price(
+    ctx: ExecutorContext,
+    *,
+    inst_id: str,
+    side: Literal["buy", "sell"],
+    tick_size: Decimal,
+    best_bid: Decimal | None = None,
+    best_ask: Decimal | None = None,
+) -> Decimal:
+    if best_bid is None or best_ask is None:
+        best_bid, best_ask = await ctx.exchange.get_best_bid_ask(inst_id=inst_id)
+    price = maker_price_for_side(
+        side=side,
+        best_bid=best_bid,
+        best_ask=best_ask,
+        tick_size=tick_size,
+    )
+    try:
+        limits = await ctx.exchange.get_price_limits(inst_id=inst_id)
+        price = clamp_maker_price_to_limits(
+            side=side,
+            price=price,
+            buy_lmt=limits.buy_lmt,
+            sell_lmt=limits.sell_lmt,
+            tick_size=tick_size,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).debug("price-limit fetch skipped: %s", exc)
+    return price
+
+
+def _is_executor_client_id(cl_ord_id: str) -> bool:
+    return cl_ord_id.startswith(("rb-", "exit", "entry", "exit-mkt"))
+
+
+async def _cancel_order_best_effort(
+    *,
+    ctx: ExecutorContext,
+    inst_id: str,
+    store: ExecutorStore,
+    active_order: ActiveOrder,
+) -> None:
+    store.record_cancel_attempt(
+        order_id_local=active_order.client_id,
+        exchange_order_id=active_order.order_id,
+        strategy_name=active_order.strategy_name,
+        purpose=active_order.purpose,
+    )
+    try:
+        await ctx.exchange.cancel_order_by_client_id(
+            inst_id=inst_id,
+            cl_ord_id=active_order.client_id,
+        )
+    except RuntimeError as exc:
+        if not _is_okx_cancel_already_done_error(exc):
+            raise
+
+
+async def _verify_order_canceled(
+    *,
+    ctx: ExecutorContext,
+    inst_id: str,
+    order_id: str,
+    client_id: str,
+    log: logging.Logger,
+) -> None:
+    order = await ctx.exchange.get_order(inst_id=inst_id, ord_id=order_id)
+    if order is None or order.state not in {"live", "partially_filled"}:
+        return
+    log.warning("order still live after cancel, retry ord_id=%s", order_id)
+    try:
+        await ctx.exchange.cancel_order_by_client_id(inst_id=inst_id, cl_ord_id=client_id)
+    except RuntimeError as exc:
+        if not _is_okx_cancel_already_done_error(exc):
+            log.warning("retry cancel failed for ord_id=%s: %s", order_id, exc)
+
+
+async def _sweep_untracked_executor_orders(
+    *,
+    ctx: ExecutorContext,
+    inst_id: str,
+    open_orders: list,
+    log: logging.Logger,
+) -> None:
+    for order in open_orders:
+        if not _is_executor_client_id(order.cl_ord_id):
+            continue
+        log.warning(
+            "untracked executor order cleanup: ord_id=%s cl_ord_id=%s side=%s",
+            order.ord_id,
+            order.cl_ord_id,
+            order.side,
+        )
+        try:
+            await ctx.exchange.cancel_order_by_client_id(
+                inst_id=inst_id,
+                cl_ord_id=order.cl_ord_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "failed to cancel untracked order ord_id=%s: %s",
+                order.ord_id,
+                exc,
+            )
+
+
+def _is_okx_price_limit_error(exc: Exception) -> bool:
+    return "sCode=51006" in str(exc)
 
 
 def _is_okx_reduce_sync_error(exc: Exception) -> bool:

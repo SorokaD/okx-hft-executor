@@ -18,6 +18,11 @@ from app.orchestrator import run_baseline_loop
 from app.strategy_manager import StrategyManager
 from services.id_generation import new_client_order_id
 from config.settings import Settings, get_settings
+from config.strategy_config import (
+    StrategiesConfig,
+    StrategyDeploymentConfig,
+    get_strategies_config,
+)
 from persistence.sqlite_store import SqliteMvpStore
 
 
@@ -100,17 +105,22 @@ def main() -> None:
     )
 
     if args.dry_run:
-        _ = build_executor_context(settings)
+        strategies = get_strategies_config(settings)
+        default_dep = strategies.get_default_deployment()
+        _ = build_executor_context(settings, deployment=default_dep)
+        _log_config_summary(log, settings, strategies)
         log.info("Dry-run: контекст собран, выход.")
         return
 
     if args.check_okx:
-        ctx = build_executor_context(settings)
-        asyncio.run(run_okx_check(ctx))
+        default_dep = get_strategies_config(settings).get_default_deployment()
+        ctx = build_executor_context(settings, deployment=default_dep)
+        asyncio.run(run_okx_check(ctx, default_dep))
         return
     if args.check_okx_order:
-        ctx = build_executor_context(settings)
-        asyncio.run(run_okx_order_check(ctx))
+        default_dep = get_strategies_config(settings).get_default_deployment()
+        ctx = build_executor_context(settings, deployment=default_dep)
+        asyncio.run(run_okx_order_check(ctx, default_dep))
         return
 
     if args.strategy_enable or args.strategy_disable or args.strategy_restart or args.list_strategies:
@@ -126,10 +136,12 @@ def main() -> None:
         return
 
     if args.single_strategy:
-        ctx = build_executor_context(settings)
+        default_dep = get_strategies_config(settings).get_default_deployment()
+        ctx = build_executor_context(settings, deployment=default_dep)
         asyncio.run(
             run_baseline_loop(
                 ctx,
+                deployment=default_dep,
                 run_seconds=args.run_seconds,
                 max_loops=args.max_loops,
             )
@@ -139,13 +151,14 @@ def main() -> None:
     run_strategy_manager(settings=settings)
 
 
-async def run_okx_check(ctx: ExecutorContext) -> None:
+async def run_okx_check(ctx: ExecutorContext, deployment: StrategyDeploymentConfig) -> None:
     settings = ctx.settings
+    inst_id = deployment.inst_id
     log = logging.getLogger(__name__)
     log.info("OKX check started")
     log.info("base_url=%s", settings.okx_base_url)
     log.info("demo_flag=%s", 1 if settings.okx_flag_demo else 0)
-    log.info("inst_id=%s", settings.okx_inst_id)
+    log.info("inst_id=%s", inst_id)
 
     account_ok = False
     ticker_ok = False
@@ -158,18 +171,18 @@ async def run_okx_check(ctx: ExecutorContext) -> None:
         log.error("account reachable: no (%s)", exc)
 
     try:
-        ticker = await ctx.exchange.get_ticker_last(inst_id=settings.okx_inst_id)
+        ticker = await ctx.exchange.get_ticker_last(inst_id=inst_id)
         ticker_ok = True
         log.info("last_price=%s", ticker.last)
     except Exception as exc:  # noqa: BLE001
         log.error("ticker reachable: no (%s)", exc)
 
     try:
-        tick = await ctx.exchange.get_tick_size(inst_id=settings.okx_inst_id)
+        tick = await ctx.exchange.get_tick_size(inst_id=inst_id)
         tick_ok = True
         log.info("tick_size=%s", tick)
     except Exception as exc:  # noqa: BLE001
-        if settings.okx_inst_id == "BTC-USDT-SWAP":
+        if inst_id == "BTC-USDT-SWAP":
             log.warning(
                 "tick_size fetch failed (%s), fallback tick_size=0.1 for BTC-USDT-SWAP",
                 exc,
@@ -187,34 +200,40 @@ async def run_okx_check(ctx: ExecutorContext) -> None:
         log.warning("OKX check finished with issues")
 
 
-async def run_okx_order_check(ctx: ExecutorContext) -> None:
+async def run_okx_order_check(ctx: ExecutorContext, deployment: StrategyDeploymentConfig) -> None:
     """Короткая проверка: open tiny order -> close tiny order."""
     settings = ctx.settings
+    inst_id = deployment.inst_id
+    exec_cfg = deployment.execution
     log = logging.getLogger(__name__)
     log.info("OKX order check started")
     log.info(
         "base_url=%s demo_flag=%s inst_id=%s td_mode=%s size=%s",
         settings.okx_base_url,
         1 if settings.okx_flag_demo else 0,
-        settings.okx_inst_id,
-        settings.okx_td_mode,
-        settings.okx_order_size,
+        inst_id,
+        exec_cfg.td_mode,
+        exec_cfg.order_size,
     )
     try:
         open_cl = new_client_order_id(prefix="chk-open")
         open_ord = await ctx.exchange.place_market_order(
             side="buy",
-            size=settings.okx_order_size,
+            size=exec_cfg.order_size,
             cl_ord_id=open_cl,
+            inst_id=inst_id,
+            td_mode=exec_cfg.td_mode,
         )
         log.info("order open submitted: ord_id=%s cl_ord_id=%s", open_ord, open_cl)
 
         close_cl = new_client_order_id(prefix="chk-close")
         close_ord = await ctx.exchange.place_market_order(
             side="sell",
-            size=settings.okx_order_size,
+            size=exec_cfg.order_size,
             cl_ord_id=close_cl,
             reduce_only=True,
+            inst_id=inst_id,
+            td_mode=exec_cfg.td_mode,
         )
         log.info("order close submitted: ord_id=%s cl_ord_id=%s", close_ord, close_cl)
         log.info("OKX order check success")
@@ -278,6 +297,42 @@ def run_manager_command(
                 )
     finally:
         store.close()
+
+
+def _log_config_summary(
+    log: logging.Logger,
+    settings: Settings,
+    strategies: StrategiesConfig,
+) -> None:
+    """Краткая сводка конфигурации без секретов (для dry-run и диагностики)."""
+    log.info("env=%s runtime_mode=%s safe_mode=%s", settings.env, settings.runtime_mode.value, settings.safe_mode)
+    log.info("strategies_config=%s", settings.strategies_config_path)
+    for dep in strategies.runtime_configs():
+        log.info(
+            "strategy=%s inst_id=%s mode=%s",
+            dep.strategy_name,
+            dep.inst_id,
+            dep.mode.value,
+        )
+    log.info("sqlite_path=%s loop_sleep=%s", settings.sqlite_path, settings.loop_sleep_sec)
+    if settings.postgres_is_configured():
+        host = settings.postgres_host
+        if settings.database_url is not None and host is None:
+            host = "(from DATABASE_URL)"
+        log.info(
+            "postgres enabled schema=%s host=%s db=%s port=%s queue=%s",
+            settings.postgres_schema,
+            host,
+            settings.postgres_db,
+            settings.postgres_port,
+            settings.postgres_queue_size,
+        )
+    else:
+        log.info(
+            "postgres disabled (enabled=%s, dsn configured=%s)",
+            settings.postgres_enabled,
+            settings.get_database_url() is not None,
+        )
 
 
 def run_strategy_manager(*, settings: Settings) -> None:

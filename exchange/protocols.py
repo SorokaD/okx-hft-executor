@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from domain.models.order import Order
-from exchange.okx.models import OkxOrder, OkxPosition, OkxTicker
+from exchange.okx.models import OkxOrder, OkxPosition, OkxPriceLimits, OkxTicker
 
 
 class ExchangeClient(Protocol):
@@ -27,7 +27,14 @@ class ExchangeClient(Protocol):
         ...
 
     async def place_market_order(
-        self, *, side: str, size: str, cl_ord_id: str, reduce_only: bool = False
+        self,
+        *,
+        side: str,
+        size: str,
+        cl_ord_id: str,
+        reduce_only: bool = False,
+        inst_id: str | None = None,
+        td_mode: str | None = None,
     ) -> str:
         ...
 
@@ -39,6 +46,8 @@ class ExchangeClient(Protocol):
         price: Decimal,
         cl_ord_id: str,
         reduce_only: bool = False,
+        inst_id: str | None = None,
+        td_mode: str | None = None,
     ) -> str:
         ...
 
@@ -63,4 +72,7 @@ class ExchangeClient(Protocol):
         ...
 
     async def get_best_bid_ask(self, *, inst_id: str) -> tuple[Decimal, Decimal]:
+        ...
+
+    async def get_price_limits(self, *, inst_id: str) -> OkxPriceLimits:
         ...

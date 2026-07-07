@@ -4,6 +4,8 @@
 
 Практический запуск процесса и журналирование в SQLite: [getting_started.md](getting_started.md).
 
+Полная модель данных (SQLite + PostgreSQL): [database/data_flow.md](database/data_flow.md).
+
 ## Цепочка: signal → … → reconciliation
 
 ```mermaid

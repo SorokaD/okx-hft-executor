@@ -44,6 +44,7 @@ flowchart TB
 - **Domain-first**: язык системы зафиксирован в `domain/` (сигнал, ордер, fill, позиция, PnL-снимок, риск-событие, рынок).
 - **Режимы** live / paper / replay подключаются подменой реализаций портов в `app/bootstrap.py`, а не ветвлением по всему коду ([docs/runtime_modes.md](docs/runtime_modes.md)).
 - **Reconciliation** — обязательная часть устойчивого исполнения ([docs/reconciliation.md](docs/reconciliation.md)).
+- **Хранение данных** — SQLite (ops) + PostgreSQL `okx_exec` (аналитика): [docs/database/README.md](docs/database/README.md).
 
 ## Основные блоки
 

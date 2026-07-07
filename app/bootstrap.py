@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from config.settings import RuntimeMode, Settings
+from config.strategy_config import StrategyDeploymentConfig
 from exchange.protocols import ExchangeClient
 from observability.logging_config import configure_logging_placeholder
 from services.clock import SystemClock
@@ -22,9 +23,14 @@ class ExecutorContext:
     settings: Settings
     clock: SystemClock
     exchange: ExchangeClient
+    deployment: StrategyDeploymentConfig | None = None
 
 
-def build_executor_context(settings: Settings) -> ExecutorContext:
+def build_executor_context(
+    settings: Settings,
+    *,
+    deployment: StrategyDeploymentConfig | None = None,
+) -> ExecutorContext:
     """Собирает контекст исполнения baseline MVP."""
     configure_logging_placeholder(settings)
     # Импорт внутри функции избегает циклов при росте графа.
@@ -36,11 +42,19 @@ def build_executor_context(settings: Settings) -> ExecutorContext:
     if use_stub:
         from exchange.okx.stub_client import OkxStubExchangeClient
 
-        exchange: ExchangeClient = OkxStubExchangeClient(settings=settings)
+        exchange: ExchangeClient = OkxStubExchangeClient(
+            settings=settings,
+            deployment=deployment,
+        )
     else:
         from exchange.okx.rest_client import OkxRestClient
 
-        exchange = OkxRestClient(settings=settings)
+        exchange = OkxRestClient(settings=settings, deployment=deployment)
 
     clock = SystemClock()
-    return ExecutorContext(settings=settings, clock=clock, exchange=exchange)
+    return ExecutorContext(
+        settings=settings,
+        clock=clock,
+        exchange=exchange,
+        deployment=deployment,
+    )
