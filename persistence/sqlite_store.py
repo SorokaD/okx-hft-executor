@@ -20,6 +20,24 @@ class TradeResult:
     fees: float
     net_pnl: float
     holding_seconds: float
+    entry_fee: float = 0.0
+    exit_fee: float = 0.0
+    fee_ccy: str | None = None
+    entry_liquidity: str | None = None
+    exit_liquidity: str | None = None
+    entry_avg_px: float | None = None
+    exit_avg_px: float | None = None
+    fee_source: str = "missing"
+    fee_status: str = "pending"
+    exit_reason: str | None = None
+    close_source: str | None = None
+    signal_id: str | None = None
+    inst_id: str | None = None
+    position_side: str | None = None
+    size: float | None = None
+    opened_at: str | None = None
+    closed_at: str | None = None
+    execution_metrics: dict[str, Any] | None = None
 
 
 class SqliteMvpStore:
@@ -131,6 +149,31 @@ class SqliteMvpStore:
             column_name="strategy_name",
             column_sql="TEXT NOT NULL DEFAULT 'unknown'",
         )
+        for col_name, col_sql in (
+            ("entry_fee", "REAL NOT NULL DEFAULT 0"),
+            ("exit_fee", "REAL NOT NULL DEFAULT 0"),
+            ("fee_ccy", "TEXT"),
+            ("entry_liquidity", "TEXT"),
+            ("exit_liquidity", "TEXT"),
+            ("entry_avg_px", "REAL"),
+            ("exit_avg_px", "REAL"),
+            ("fee_source", "TEXT NOT NULL DEFAULT 'missing'"),
+            ("fee_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("exit_reason", "TEXT"),
+            ("close_source", "TEXT"),
+            ("signal_id", "TEXT"),
+            ("inst_id", "TEXT"),
+            ("position_side", "TEXT"),
+            ("size", "REAL"),
+            ("opened_at", "TEXT"),
+            ("closed_at", "TEXT"),
+            ("execution_metrics_json", "TEXT"),
+        ):
+            self._ensure_column(
+                table_name="trade_results",
+                column_name=col_name,
+                column_sql=col_sql,
+            )
         self._ensure_column(
             table_name="service_events",
             column_name="strategy_name",
@@ -281,12 +324,17 @@ class SqliteMvpStore:
         self._conn.commit()
 
     def save_trade_result(self, result: TradeResult) -> None:
+        metrics_json = json.dumps(result.execution_metrics or {})
         self._conn.execute(
             """
             INSERT OR REPLACE INTO trade_results(
-                position_id, strategy_name, gross_pnl, fees, net_pnl, holding_seconds
+                position_id, strategy_name, gross_pnl, fees, net_pnl, holding_seconds,
+                entry_fee, exit_fee, fee_ccy, entry_liquidity, exit_liquidity,
+                entry_avg_px, exit_avg_px, fee_source, fee_status,
+                exit_reason, close_source, signal_id, inst_id, position_side, size,
+                opened_at, closed_at, execution_metrics_json
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.position_id,
@@ -295,6 +343,24 @@ class SqliteMvpStore:
                 result.fees,
                 result.net_pnl,
                 result.holding_seconds,
+                result.entry_fee,
+                result.exit_fee,
+                result.fee_ccy,
+                result.entry_liquidity,
+                result.exit_liquidity,
+                result.entry_avg_px,
+                result.exit_avg_px,
+                result.fee_source,
+                result.fee_status,
+                result.exit_reason,
+                result.close_source,
+                result.signal_id,
+                result.inst_id,
+                result.position_side,
+                result.size,
+                result.opened_at,
+                result.closed_at,
+                metrics_json,
             ),
         )
         self._conn.commit()

@@ -13,6 +13,8 @@ _FILES = (
     _ROOT / "migrations/postgres/001_okx_exec_schema.sql",
     _ROOT / "migrations/postgres/002_indexes_only.sql",
     _ROOT / "migrations/postgres/003_triggers.sql",
+    _ROOT / "migrations/postgres/005_add_execution_metrics.sql",
+    _ROOT / "migrations/postgres/006_trade_daily_summary_view.sql",
 )
 
 

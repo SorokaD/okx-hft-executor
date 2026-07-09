@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import queue
@@ -355,33 +356,69 @@ class PostgresJournal:
         entry_signal_id: str | None = None,
         entry_order_id_local: str | None = None,
         exit_order_id_local: str | None = None,
+        entry_fee: float = 0.0,
+        exit_fee: float = 0.0,
+        fee_ccy: str | None = None,
+        entry_liquidity: str | None = None,
+        exit_liquidity: str | None = None,
+        fee_source: str = "missing",
+        fee_status: str = "pending",
+        close_source: str | None = None,
+        execution_metrics: dict[str, Any] | None = None,
     ) -> None:
-        self._enqueue(
-            (
-                "trade_result",
-                {
-                    "run_id": run_id,
-                    "trade_id": trade_id,
-                    "position_id": position_id,
-                    "inst_id": inst_id,
-                    "strategy_name": strategy_name,
-                    "side": side,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "qty": qty,
-                    "gross_pnl": gross_pnl,
-                    "fees": fees,
-                    "net_pnl": net_pnl,
-                    "holding_seconds": holding_seconds,
-                    "entry_ts": entry_ts,
-                    "exit_ts": exit_ts,
-                    "exit_reason": exit_reason,
-                    "entry_signal_id": entry_signal_id,
-                    "entry_order_id_local": entry_order_id_local,
-                    "exit_order_id_local": exit_order_id_local,
-                },
-            )
-        )
+        metrics = execution_metrics or {}
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "trade_id": trade_id,
+            "position_id": position_id,
+            "inst_id": inst_id,
+            "strategy_name": strategy_name,
+            "side": side,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "qty": qty,
+            "gross_pnl": gross_pnl,
+            "fees": fees,
+            "net_pnl": net_pnl,
+            "holding_seconds": holding_seconds,
+            "entry_ts": entry_ts,
+            "exit_ts": exit_ts,
+            "exit_reason": exit_reason,
+            "entry_signal_id": entry_signal_id,
+            "entry_order_id_local": entry_order_id_local,
+            "exit_order_id_local": exit_order_id_local,
+            "entry_fee": entry_fee,
+            "exit_fee": exit_fee,
+            "fee_ccy": fee_ccy,
+            "entry_liquidity": entry_liquidity,
+            "exit_liquidity": exit_liquidity,
+            "fee_source": fee_source,
+            "fee_status": fee_status,
+            "close_source": close_source,
+            "entry_order_count": metrics.get("entry_order_count"),
+            "entry_reprice_count": metrics.get("entry_reprice_count"),
+            "entry_cancel_count": metrics.get("entry_cancel_count"),
+            "entry_wait_sec": metrics.get("entry_wait_sec"),
+            "entry_filled_px": metrics.get("entry_filled_px"),
+            "entry_first_px": metrics.get("entry_first_px"),
+            "entry_last_px": metrics.get("entry_last_px"),
+            "entry_slippage_ticks": metrics.get("entry_slippage_ticks_from_touch"),
+            "exit_order_count": metrics.get("exit_order_count"),
+            "exit_reprice_count": metrics.get("exit_reprice_count"),
+            "exit_cancel_count": metrics.get("exit_cancel_count"),
+            "exit_wait_sec": metrics.get("exit_wait_sec"),
+            "exit_filled_px": metrics.get("exit_filled_px"),
+            "exit_first_px": metrics.get("exit_first_px"),
+            "exit_last_px": metrics.get("exit_last_px"),
+            "exit_slippage_ticks": metrics.get("exit_slippage_ticks_from_touch"),
+            "exit_market_fallback_used": metrics.get("exit_market_fallback_used"),
+            "exit_market_fallback_reason": metrics.get("exit_market_fallback_reason"),
+            "exit_maker_attempts": metrics.get("exit_maker_attempts"),
+            "timeout_triggered": metrics.get("timeout_triggered"),
+            "final_exit_reason": metrics.get("final_exit_reason"),
+            "extra_json": metrics,
+        }
+        self._enqueue(("trade_result", payload))
 
     def enqueue_service_event(
         self,
@@ -775,6 +812,7 @@ class PostgresJournal:
 
     def _insert_trade_result(self, conn: psycopg.Connection[Any], p: dict[str, Any]) -> None:
         win_flag = p["net_pnl"] > 0
+        extra = p.get("extra_json") or {}
         conn.execute(
             sql.SQL(
                 """
@@ -782,9 +820,23 @@ class PostgresJournal:
                 trade_id, run_id, position_id, inst_id, strategy_name, side,
                 entry_signal_id, entry_order_id_local, exit_order_id_local,
                 entry_price, exit_price, qty, gross_pnl, fees_total, net_pnl,
-                holding_seconds, entry_ts, exit_ts, exit_reason, win_flag
+                holding_seconds, entry_ts, exit_ts, exit_reason, win_flag,
+                entry_fee, exit_fee, fee_ccy, entry_liquidity, exit_liquidity,
+                fee_source, fee_status, close_source,
+                entry_order_count, entry_reprice_count, entry_cancel_count, entry_wait_sec,
+                entry_filled_px, entry_first_px, entry_last_px, entry_slippage_ticks,
+                exit_order_count, exit_reprice_count, exit_cancel_count, exit_wait_sec,
+                exit_filled_px, exit_first_px, exit_last_px, exit_slippage_ticks,
+                exit_market_fallback_used, exit_market_fallback_reason, exit_maker_attempts,
+                timeout_triggered, final_exit_reason, extra_json
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s
+            )
             ON CONFLICT (trade_id) DO NOTHING
             """
             ).format(self._qi("trade_results")),
@@ -809,6 +861,36 @@ class PostgresJournal:
                 p["exit_ts"],
                 p["exit_reason"],
                 win_flag,
+                p.get("entry_fee", 0.0),
+                p.get("exit_fee", 0.0),
+                p.get("fee_ccy"),
+                p.get("entry_liquidity"),
+                p.get("exit_liquidity"),
+                p.get("fee_source", "missing"),
+                p.get("fee_status", "pending"),
+                p.get("close_source"),
+                p.get("entry_order_count"),
+                p.get("entry_reprice_count"),
+                p.get("entry_cancel_count"),
+                p.get("entry_wait_sec"),
+                p.get("entry_filled_px"),
+                p.get("entry_first_px"),
+                p.get("entry_last_px"),
+                p.get("entry_slippage_ticks"),
+                p.get("exit_order_count"),
+                p.get("exit_reprice_count"),
+                p.get("exit_cancel_count"),
+                p.get("exit_wait_sec"),
+                p.get("exit_filled_px"),
+                p.get("exit_first_px"),
+                p.get("exit_last_px"),
+                p.get("exit_slippage_ticks"),
+                p.get("exit_market_fallback_used"),
+                p.get("exit_market_fallback_reason"),
+                p.get("exit_maker_attempts"),
+                p.get("timeout_triggered"),
+                p.get("final_exit_reason"),
+                json.dumps(extra),
             ),
         )
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from config.settings import Settings
+from execution.trade_lifecycle import TradeLifecycleTracker
 from persistence.postgres_journal import PostgresJournal, RunFinishParams, RunStartParams, StrategyParams
 from persistence.sqlite_store import SqliteMvpStore, TradeResult
 
@@ -70,6 +71,7 @@ class ExecutorStore:
         self._position_meta: dict[str, PositionMeta] = {}
         self._submitted_orders: set[str] = set()
         self._last_order_by_purpose: dict[str, str] = {}
+        self._trade_lifecycle: TradeLifecycleTracker | None = None
 
     @classmethod
     def create(
@@ -159,6 +161,19 @@ class ExecutorStore:
 
     def close(self) -> None:
         self._sqlite.close()
+
+    def begin_trade_lifecycle(self, signal_id: str, *, tick_size: Any = None) -> None:
+        from decimal import Decimal
+
+        ts = Decimal(str(tick_size)) if tick_size is not None else None
+        self._trade_lifecycle = TradeLifecycleTracker()
+        self._trade_lifecycle.begin(signal_id, tick_size=ts)
+
+    def get_trade_lifecycle(self) -> TradeLifecycleTracker | None:
+        return self._trade_lifecycle
+
+    def clear_trade_lifecycle(self) -> None:
+        self._trade_lifecycle = None
 
     def get_counts_summary(self) -> dict[str, int]:
         return self._sqlite.get_counts_summary()
@@ -434,6 +449,7 @@ class ExecutorStore:
         exit_price: float,
         exit_ts: str,
         exit_reason: str,
+        close_source: str | None = None,
     ) -> None:
         self._sqlite.save_position_close(
             position_id=position_id,
@@ -447,7 +463,7 @@ class ExecutorStore:
             meta.exit_price = exit_price
             meta.exit_ts = exit_ts
         if self._journal is not None and self._run_id is not None:
-            status = "reconciled" if exit_reason in {"sync_lost", "reconciled"} else "closed"
+            status = "reconciled" if exit_reason in {"sync_lost", "reconciled", "reconcile"} else "closed"
             self._journal.enqueue_position_close(
                 position_id=position_id,
                 exit_price=exit_price,
@@ -465,28 +481,39 @@ class ExecutorStore:
             log.warning("trade_result without position meta: %s", result.position_id)
             return
         trade_id = f"trade-{result.position_id}"
-        exit_price = meta.exit_price if meta.exit_price is not None else meta.entry_price
-        exit_ts = meta.exit_ts or meta.entry_ts
+        exit_price = result.exit_avg_px or (meta.exit_price if meta.exit_price is not None else meta.entry_price)
+        exit_ts = result.closed_at or meta.exit_ts or meta.entry_ts
+        entry_ts = result.opened_at or meta.entry_ts
+        metrics = result.execution_metrics or {}
         self._journal.enqueue_trade_result(
             run_id=self._run_id,
             trade_id=trade_id,
             position_id=result.position_id,
-            inst_id=self._inst_id,
+            inst_id=result.inst_id or self._inst_id,
             strategy_name=result.strategy_name,
-            side=meta.side,
-            entry_price=meta.entry_price,
+            side=result.position_side or meta.side,
+            entry_price=result.entry_avg_px or meta.entry_price,
             exit_price=exit_price,
-            qty=meta.size,
+            qty=result.size or meta.size,
             gross_pnl=result.gross_pnl,
             fees=result.fees,
             net_pnl=result.net_pnl,
             holding_seconds=result.holding_seconds,
-            entry_ts=meta.entry_ts,
+            entry_ts=entry_ts,
             exit_ts=exit_ts,
-            exit_reason=meta.exit_reason,
-            entry_signal_id=meta.entry_signal_id,
+            exit_reason=result.exit_reason or meta.exit_reason,
+            entry_signal_id=result.signal_id or meta.entry_signal_id,
             entry_order_id_local=meta.entry_order_id_local,
             exit_order_id_local=meta.exit_order_id_local,
+            entry_fee=result.entry_fee,
+            exit_fee=result.exit_fee,
+            fee_ccy=result.fee_ccy,
+            entry_liquidity=result.entry_liquidity,
+            exit_liquidity=result.exit_liquidity,
+            fee_source=result.fee_source,
+            fee_status=result.fee_status,
+            close_source=result.close_source,
+            execution_metrics=metrics,
         )
 
     def save_service_event(

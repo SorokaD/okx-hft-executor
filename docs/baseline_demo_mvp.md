@@ -122,5 +122,5 @@ python -m app.main --max-loops 60
 
 - только REST polling (без private/public WebSocket в этом контуре);
 - один инструмент (`OKX_INST_ID`);
-- комиссии в `trade_results` пока сохраняются как `0.0`;
+- комиссии в `trade_results`: `entry_fee`, `exit_fee`, `fees_total`, `net_pnl`; источник в `fee_source` (`okx_fill` / `estimated_config`);
 - нет отдельного HTTP control plane в обязательном пути запуска (см. optional extra `control` в `pyproject.toml`).

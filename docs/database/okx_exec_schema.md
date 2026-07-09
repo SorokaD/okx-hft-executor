@@ -218,14 +218,21 @@ erDiagram
 |---------|-----|----------|
 | trade_id | TEXT PK | |
 | position_id | TEXT FK | |
+| entry_signal_id | TEXT | исходный signal_id (сохраняется при entry reprice) |
 | gross_pnl | NUMERIC | до комиссий |
-| fees_total | NUMERIC | |
-| funding_total | NUMERIC | |
-| slippage_total | NUMERIC | |
-| net_pnl | NUMERIC | итог |
+| entry_fee, exit_fee, fees_total | NUMERIC | комиссии; `fee_source` = `okx_fill` или `estimated_config` |
+| net_pnl | NUMERIC | `gross_pnl - fees_total` |
+| entry_liquidity, exit_liquidity | TEXT | `maker` / `taker` |
+| close_source | TEXT | `executor_maker`, `executor_market_fallback`, `okx_reconcile`, … |
+| exit_reason / final_exit_reason | TEXT | `tp`, `sl`, `timeout`, `reconcile`, … |
+| entry_* / exit_* execution metrics | INT/NUMERIC | reprice/cancel counts, wait_sec, slippage_ticks |
+| exit_market_fallback_used | BOOL | market reduce-only fallback после maker exit |
 | holding_seconds | NUMERIC | |
-| exit_reason | TEXT | |
 | win_flag | BOOL | net_pnl > 0 |
+| extra_json | JSONB | полный снимок execution metrics |
+
+**gross_pnl vs net_pnl:** gross — разница цен × size без комиссий; net — после `fees_total`.
+Дневной summary: view `okx_exec.v_trade_daily_summary` или `python scripts/trade_daily_summary.py`.
 
 ---
 
