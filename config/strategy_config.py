@@ -22,6 +22,8 @@ class StrategyExecutionConfig(BaseModel):
     order_size: str = "0.01"
     maker_reprice_sec: int = 3
     maker_max_wait_sec: int = 20
+    fee_rate_maker: str = "0.0002"
+    fee_rate_taker: str = "0.0005"
 
 
 class StrategyDeploymentConfig(BaseModel):

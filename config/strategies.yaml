@@ -11,6 +11,8 @@ strategies:
       order_size: "0.01"
       maker_reprice_sec: 3
       maker_max_wait_sec: 20
+      fee_rate_maker: "0.0002"
+      fee_rate_taker: "0.0005"
     decision_step_sec: 30
     cooldown_sec: 20
     take_profit_ticks: 700

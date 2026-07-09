@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Protocol
 
 from domain.models.order import Order
-from exchange.okx.models import OkxOrder, OkxPosition, OkxPriceLimits, OkxTicker
+from exchange.okx.models import OkxOrder, OkxPosition, OkxPriceLimits, OkxTicker, OkxFill
 
 
 class ExchangeClient(Protocol):
@@ -54,6 +54,15 @@ class ExchangeClient(Protocol):
     async def get_order(
         self, *, inst_id: str, ord_id: str | None = None, cl_ord_id: str | None = None
     ) -> OkxOrder | None:
+        ...
+
+    async def get_order_fills(
+        self,
+        *,
+        inst_id: str,
+        ord_id: str | None = None,
+        cl_ord_id: str | None = None,
+    ) -> list[OkxFill]:
         ...
 
     async def get_open_orders(self, *, inst_id: str) -> list[OkxOrder]:

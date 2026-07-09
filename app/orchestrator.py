@@ -16,7 +16,6 @@ from app.position_state import (
     ActiveOrder,
     ActivePosition,
     build_active_position,
-    calc_gross_pnl,
     check_exit_reason,
     clamp_maker_price_to_limits,
     is_entry_order_price_stale,
@@ -25,8 +24,9 @@ from app.position_state import (
     should_use_market_exit,
 )
 from domain.value_objects.instrument_id import InstrumentId
+from execution.trade_finalize import finalize_closed_trade, finalize_reconciled_close
+from execution.trade_lifecycle import TradeLifecycleTracker
 from persistence.executor_store import ExecutorStore
-from persistence.sqlite_store import TradeResult
 from services.id_generation import new_client_order_id
 from strategy.registry import create_strategy
 
@@ -82,6 +82,8 @@ async def run_baseline_loop_with_limits(
     strategy_name = dep.strategy_name
     inst_id = dep.inst_id
     exec_cfg = dep.execution
+    fee_rate_maker = Decimal(exec_cfg.fee_rate_maker)
+    fee_rate_taker = Decimal(exec_cfg.fee_rate_taker)
     strategy = create_strategy(strategy_name, params=dep.params)
     store = ExecutorStore.create(
         settings,
@@ -276,39 +278,73 @@ async def run_baseline_loop_with_limits(
                                 entry_price=float(active_position.entry_price),
                                 entry_ts=active_position.entry_ts.isoformat(),
                                 size=float(active_position.size),
+                                entry_signal_id=(
+                                    store.get_trade_lifecycle().entry_signal_id
+                                    if store.get_trade_lifecycle()
+                                    else active_order.client_id
+                                ),
+                                entry_order_id_local=active_order.client_id,
                             )
+                            lc = store.get_trade_lifecycle()
+                            if lc is not None:
+                                lc.on_entry_fill(
+                                    float(fill_price),
+                                    exchange_ord_id=order.ord_id,
+                                    cl_ord_id=active_order.client_id,
+                                    ts=now,
+                                )
+                                lc.bind_position(active_position.position_id)
                         else:
                             if active_position is not None:
-                                gross_pnl = calc_gross_pnl(active_position, fill_price)
-                                holding = (now - active_position.entry_ts).total_seconds()
-                                trade = TradeResult(
-                                    position_id=active_position.position_id,
-                                    strategy_name=active_position.strategy_name,
-                                    gross_pnl=float(gross_pnl),
-                                    fees=0.0,
-                                    net_pnl=float(gross_pnl),
-                                    holding_seconds=holding,
+                                lc = store.get_trade_lifecycle() or TradeLifecycleTracker()
+                                close_source = (
+                                    "executor_market_fallback"
+                                    if lc.exit_market_fallback_used
+                                    else "executor_maker"
                                 )
-                                store.save_position_close(
-                                    position_id=active_position.position_id,
-                                    exit_price=float(fill_price),
-                                    exit_ts=now.isoformat(),
-                                    exit_reason="maker_exit",
+                                lc.on_exit_fill(
+                                    float(fill_price),
+                                    exchange_ord_id=order.ord_id,
+                                    cl_ord_id=active_order.client_id,
+                                    order_type=lc.exit_order_type,
+                                    ts=now,
+                                    close_source=close_source,
                                 )
-                                store.save_trade_result(trade)
+                                trade = await finalize_closed_trade(
+                                    ctx=ctx,
+                                    store=store,
+                                    position=active_position,
+                                    lifecycle=lc,
+                                    exit_price=fill_price,
+                                    closed_at=now,
+                                    inst_id=inst_id,
+                                    fee_rate_maker=fee_rate_maker,
+                                    fee_rate_taker=fee_rate_taker,
+                                    exit_reason_raw=lc.exit_trigger_reason,
+                                    close_source=close_source,
+                                )
                                 store.save_service_event(
                                     strategy_name=active_position.strategy_name,
                                     event_type="position_closed",
                                     message="position closed",
                                     payload={
                                         "position_id": active_position.position_id,
-                                        "gross_pnl": float(gross_pnl),
+                                        "gross_pnl": trade.gross_pnl,
+                                        "net_pnl": trade.net_pnl,
+                                        "exit_reason": trade.exit_reason,
+                                        "close_source": trade.close_source,
+                                        "fee_source": trade.fee_source,
                                     },
                                 )
                                 log.info(
-                                    "position closed: id=%s gross_pnl=%s cooldown=%ss",
+                                    "position closed: id=%s gross_pnl=%s net_pnl=%s fees=%s "
+                                    "exit_reason=%s close_source=%s cooldown=%ss",
                                     active_position.position_id,
-                                    gross_pnl,
+                                    trade.gross_pnl,
+                                    trade.net_pnl,
+                                    trade.fees,
+                                    trade.exit_reason,
+                                    trade.close_source,
                                     strategy.config.cooldown_sec,
                                 )
                                 strategy.on_position_closed(now)
@@ -330,6 +366,9 @@ async def run_baseline_loop_with_limits(
                         has_active_order = False
                     elif order and order.state in {"canceled", "rejected"}:
                         if active_order.purpose == "exit" and active_position is not None:
+                            lc = store.get_trade_lifecycle()
+                            if lc is not None:
+                                lc.on_exit_maker_attempt_failed()
                             active_position.exit_maker_attempts += 1
                             log.warning(
                                 "exit order not filled: ord_id=%s state=%s attempts=%s",
@@ -354,6 +393,7 @@ async def run_baseline_loop_with_limits(
                                 order.ord_id,
                                 order.state,
                             )
+                            store.clear_trade_lifecycle()
                             store.save_service_event(
                                 strategy_name=active_order.strategy_name,
                                 event_type="entry_not_filled",
@@ -506,11 +546,16 @@ async def run_baseline_loop_with_limits(
                                             has_open_position = True
                                             has_active_order = False
                                             continue
-                                        store.save_position_close(
-                                            position_id=active_position.position_id,
-                                            exit_price=float(ticker.last),
-                                            exit_ts=now.isoformat(),
-                                            exit_reason="sync_lost",
+                                        await finalize_reconciled_close(
+                                            ctx=ctx,
+                                            store=store,
+                                            position=active_position,
+                                            lifecycle=store.get_trade_lifecycle(),
+                                            exit_price=ticker.last,
+                                            closed_at=now,
+                                            inst_id=inst_id,
+                                            fee_rate_maker=fee_rate_maker,
+                                            fee_rate_taker=fee_rate_taker,
                                         )
                                         store.save_service_event(
                                             strategy_name=active_position.strategy_name,
@@ -534,6 +579,10 @@ async def run_baseline_loop_with_limits(
                                 new_order_id,
                                 reprice,
                             )
+                            reprice_purpose = active_order.purpose
+                            lc = store.get_trade_lifecycle()
+                            if lc is not None:
+                                lc.on_reprice(reprice_purpose, float(reprice), now)
                             old_client_id = active_order.client_id
                             old_strategy = active_order.strategy_name
                             old_side = active_order.side
@@ -563,6 +612,7 @@ async def run_baseline_loop_with_limits(
                                 parent_order_id_local=old_client_id,
                                 position_id=active_position.position_id if active_position else None,
                                 reduce_only=old_reduce,
+                                signal_id=lc.entry_signal_id if lc and reprice_purpose == "entry" else None,
                             )
                         elif max_wait_elapsed > max_wait_sec:
                             log.warning(
@@ -585,7 +635,12 @@ async def run_baseline_loop_with_limits(
                                 client_id=timed_out.client_id,
                                 log=log,
                             )
+                            lc = store.get_trade_lifecycle()
+                            if lc is not None:
+                                lc.on_timeout_cancel(timed_out.purpose)
                             if timed_out.purpose == "exit" and active_position is not None:
+                                if lc is not None:
+                                    lc.on_exit_maker_attempt_failed()
                                 active_position.exit_maker_attempts += 1
                             active_order = None
 
@@ -619,6 +674,7 @@ async def run_baseline_loop_with_limits(
                             side=signal.side,
                             created_at=signal.created_at.isoformat(),
                         )
+                        store.begin_trade_lifecycle(signal.signal_id, tick_size=tick_size)
                         store.save_service_event(
                             strategy_name=signal.strategy_name,
                             event_type="decision",
@@ -680,6 +736,13 @@ async def run_baseline_loop_with_limits(
                             exchange_order_id,
                             maker_px,
                         )
+                        lc = store.get_trade_lifecycle()
+                        if lc is not None:
+                            lc.on_entry_submit(
+                                float(maker_px),
+                                touch_px=float(maker_px),
+                                ts=now,
+                            )
                         store.save_service_event(
                             strategy_name=signal.strategy_name,
                             event_type="entry_submitted",
@@ -714,6 +777,9 @@ async def run_baseline_loop_with_limits(
                 else:
                     reason = check_exit_reason(active_position, ticker.last, now)
                     if reason:
+                        lc = store.get_trade_lifecycle()
+                        if lc is not None:
+                            lc.on_exit_trigger(reason)
                         exit_side: Literal["buy", "sell"] = (
                             "sell" if active_position.side == "long" else "buy"
                         )
@@ -797,11 +863,16 @@ async def run_baseline_loop_with_limits(
                                     )
                                     has_open_position = True
                                     continue
-                                store.save_position_close(
-                                    position_id=active_position.position_id,
-                                    exit_price=float(ticker.last),
-                                    exit_ts=now.isoformat(),
-                                    exit_reason="sync_lost",
+                                await finalize_reconciled_close(
+                                    ctx=ctx,
+                                    store=store,
+                                    position=active_position,
+                                    lifecycle=store.get_trade_lifecycle(),
+                                    exit_price=ticker.last,
+                                    closed_at=now,
+                                    inst_id=inst_id,
+                                    fee_rate_maker=fee_rate_maker,
+                                    fee_rate_taker=fee_rate_taker,
                                 )
                                 store.save_service_event(
                                     strategy_name=active_position.strategy_name,
@@ -828,6 +899,14 @@ async def run_baseline_loop_with_limits(
                             reduce_only=True,
                             size=str(active_position.size),
                         )
+                        if lc is not None:
+                            lc.on_exit_submit(
+                                float(exit_px),
+                                order_type=order_type,
+                                market_fallback=use_market,
+                                ts=now,
+                            )
+                            lc.exit_maker_attempts = active_position.exit_maker_attempts
                         exit_event = f"{reason.lower()}_exit_market" if use_market else f"{reason.lower()}_exit"
                         store.save_service_event(
                             strategy_name=active_position.strategy_name,

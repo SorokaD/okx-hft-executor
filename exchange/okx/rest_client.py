@@ -15,7 +15,7 @@ from config.settings import Settings
 from config.strategy_config import StrategyDeploymentConfig
 from domain.models.order import Order
 from exchange.okx.auth import make_timestamp, sign_okx_request
-from exchange.okx.models import OkxOrder, OkxPosition, OkxTicker
+from exchange.okx.models import OkxFill, OkxOrder, OkxPosition, OkxTicker
 
 log = logging.getLogger(__name__)
 
@@ -190,6 +190,28 @@ class OkxRestClient:
         if not item:
             return None
         return self._parse_order(item)
+
+    async def get_order_fills(
+        self,
+        *,
+        inst_id: str,
+        ord_id: str | None = None,
+        cl_ord_id: str | None = None,
+    ) -> list[OkxFill]:
+        params: dict[str, str] = {"instId": inst_id}
+        if ord_id:
+            params["ordId"] = ord_id
+        if cl_ord_id:
+            params["clOrdId"] = cl_ord_id
+        data = await self._request(
+            "GET",
+            "/api/v5/trade/fills",
+            params=params,
+            auth=True,
+            expect_list=True,
+            allow_empty=True,
+        )
+        return [self._parse_fill(item) for item in data]
 
     async def get_open_orders(self, *, inst_id: str) -> list[OkxOrder]:
         data = await self._request(
@@ -488,4 +510,20 @@ class OkxRestClient:
             avg_px=_to_decimal(item.get("avgPx")),
             sz=_to_decimal(item.get("sz")) or Decimal("0"),
             fill_sz=_to_decimal(item.get("accFillSz")) or Decimal("0"),
+        )
+
+    def _parse_fill(self, item: dict[str, Any]) -> OkxFill:
+        fee_raw = _to_decimal(item.get("fee")) or Decimal("0")
+        return OkxFill(
+            fill_id=str(item.get("tradeId", item.get("billId", ""))),
+            ord_id=str(item.get("ordId", "")),
+            cl_ord_id=str(item.get("clOrdId", "")),
+            inst_id=str(item.get("instId", "")),
+            side=str(item.get("side", "")),
+            fill_px=_to_decimal(item.get("fillPx")) or Decimal("0"),
+            fill_sz=_to_decimal(item.get("fillSz")) or Decimal("0"),
+            fee=fee_raw,
+            fee_ccy=str(item.get("feeCcy", "USDT")),
+            exec_type=str(item.get("execType")) if item.get("execType") else None,
+            ts_ms=int(item["ts"]) if item.get("ts") else None,
         )

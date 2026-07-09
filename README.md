@@ -83,7 +83,9 @@ flowchart TB
 - локальный контроль выхода по TP/SL/timeout;
 - cooldown после закрытия;
 - сверка позиции с биржей при расхождении (см. [docs/reconciliation.md](docs/reconciliation.md) и событие `position_reconciled` в SQLite);
-- persistence в SQLite (`signals`, `orders`, `positions`, `trade_results`, `service_events`).
+- persistence в SQLite + PostgreSQL `okx_exec` (`trade_results` с gross/net PnL, комиссиями, execution metrics).
+
+**Аналитика baseline:** `gross_pnl` — до комиссий, `net_pnl` — после; `market_fallback_ratio` и maker ratios — в view `okx_exec.v_trade_daily_summary` или `python scripts/trade_daily_summary.py`. См. [docs/database/okx_exec_schema.md](docs/database/okx_exec_schema.md).
 
 Подробно: [docs/baseline_demo_mvp.md](docs/baseline_demo_mvp.md).
 

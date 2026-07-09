@@ -39,3 +39,20 @@ class OkxPriceLimits:
     buy_lmt: Decimal
     sell_lmt: Decimal
 
+
+@dataclass(slots=True)
+class OkxFill:
+    """Исполнение ордера (GET /api/v5/trade/fills)."""
+
+    fill_id: str
+    ord_id: str
+    cl_ord_id: str
+    inst_id: str
+    side: str
+    fill_px: Decimal
+    fill_sz: Decimal
+    fee: Decimal
+    fee_ccy: str
+    exec_type: str | None
+    ts_ms: int | None = None
+
